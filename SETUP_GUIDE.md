@@ -129,6 +129,12 @@ Network URL: http://<địa_chỉ_IP_mạng>:8501
    - Biểu đồ QQ Plot và Histogram trước và sau chuẩn hóa.
    - Biểu đồ chiếu PCA 2D Scatter Plot.
    - Đồ thị đường cong ROC-AUC, ma trận nhầm lẫn (Confusion Matrix) và Feature Importance của từng mô hình ML.
+4. **Trang New Diagnosis (Chẩn đoán lâm sàng ảnh mới):**
+   - **Tải lên hàng loạt ảnh / Trọn bộ Series DICOM**: Hỗ trợ chọn cùng lúc nhiều lát cắt `.dcm`, `.png`, `.jpg` (hoặc kéo thả cả thư mục `sample_data/data-test/`). Tự động nhận diện chuẩn y tế DICOM và áp dụng cửa sổ nhu mô phổi (WL=-600, WW=1500 HU).
+   - **Kết luận lâm sàng tổng thể**: Đưa ra kết luận tổng hợp ca bệnh theo chuẩn y khoa (Ví dụ: *"Kết luận lâm sàng: Cả 11 lát cắt của bệnh nhân đều được chẩn đoán là NORMAL (Âm tính với tổn thương đông đặc/kính mờ dạng COVID-19), với xác suất trung bình 71.3%."*).
+   - **Ảnh động trực quan Cine-Loop GIF**: Tự động ghép nối các lát cắt thành hoạt ảnh GIF động chạy quét qua toàn bộ phổi với 2 chế độ hiển thị (*Song song ảnh gốc - phân vùng* hoặc *Chỉ lớp phủ*), cho phép tùy chỉnh tốc độ khung hình và tải file GIF về máy.
+   - **Bảng Tổng hợp Kết quả Chẩn đoán**: Thống kê chi tiết từng lát cắt (STT, Tên file, Chẩn đoán, Độ tin cậy, Xác suất Bình thường, Xác suất COVID-19) kèm nút xuất file báo cáo CSV (`utf-8-sig`).
+   - **Khảo sát Chi tiết Từng Lát cắt**: Xem trực tiếp ảnh gốc, mặt nạ phân vùng U-Net, lớp phủ Cyan, đồ thị cột xác suất, 24 đặc trưng Radiomics và thẻ thông tin DICOM Header.
 
 ---
 
@@ -140,8 +146,8 @@ CAD-Analysis-Dashboard/
 │   ├── dashboard.py                  # Mã nguồn chính của Streamlit Dashboard
 │   ├── database_setup.py             # Script nạp CSV vào SQLite DB (đã fix path động)
 │   ├── ex.py                         # Script kiểm tra truy vấn nhanh DB
-│   ├── extracted_features_Covid.csv  # 2.5MB đặc trưng Radiomics trích xuất ca COVID
-│   ├── extracted_features_normal.csv # 1.3MB đặc trưng Radiomics trích xuất ca Normal
+│   ├── extracted_features_Covid.csv  # 2.5MB đặc trưng Radiomics trích xuất ca COVID (2.246 mẫu)
+│   ├── extracted_features_normal.csv # 1.3MB đặc trưng Radiomics trích xuất ca Normal (1.203 mẫu)
 │   ├── params.yaml                   # Cấu hình tham số trích xuất PyRadiomics
 │   └── radiomics_data.db             # Cơ sở dữ liệu SQLite chứa bảng radiomic_features
 ├── ML/
@@ -155,11 +161,21 @@ CAD-Analysis-Dashboard/
 │       ├── Unet_new.ipynb                    # Pipeline suy luận và tạo mask tự động
 │       ├── lung_segmentation_unet .h5        # Trọng số mô hình U-Net đã train (~372MB)
 │       └── predictions.npy                   # Kết quả dự đoán mask lưu dạng numpy
+├── models/
+│   └── cad_classifier.joblib         # Pipeline Random Forest đã train & chuẩn hóa
 ├── modules/
-│   └── eda.py                        # Thư viện hàm xử lý EDA, thống kê, PCA, ML
-├── requirements.txt                  # Danh sách thư viện cho Dashboard & EDA
+│   ├── eda.py                        # Thư viện hàm xử lý EDA, thống kê, PCA, ML
+│   └── inference.py                  # Engine chẩn đoán ảnh mới End-to-End (DICOM, U-Net, Radiomics, GIF)
+├── output/                           # Thư mục lưu trữ kết quả chẩn đoán (mask, overlay, GIF, summary CSV)
+├── predict.py                        # Công cụ dòng lệnh CLI chẩn đoán đơn lẻ hoặc hàng loạt
+├── sample_data/
+│   ├── data-test/                    # 11 lát cắt CT DICOM lâm sàng thực tế (.dcm)
+│   ├── create_sample.py              # Script sinh ảnh lát cắt CT mô phỏng
+│   └── sample_chest_ct.jpg           # Ảnh lát cắt CT mẫu kiểm thử
+├── requirements.txt                  # Danh sách thư viện cho Dashboard, DICOM & EDA
 ├── requirements-ml.txt               # Danh sách thư viện cho Deep Learning & Radiomics
 ├── SETUP_GUIDE.md                    # Tài liệu hướng dẫn cài đặt & vận hành (file này)
+├── ARCHITECTURE.md                   # Tài liệu kiến trúc hệ thống chi tiết
 └── README.md                         # Giới thiệu tổng quan dự án
 ```
 
@@ -180,7 +196,7 @@ CAD-Analysis-Dashboard/
 
 ## 7. Hướng dẫn chạy chẩn đoán với ảnh mới (Inference on New Images)
 
-Dự án đã được tích hợp đầy đủ pipeline chẩn đoán tự động cho ảnh mới qua 2 cách:
+Dự án đã được tích hợp đầy đủ pipeline chẩn đoán tự động cho ảnh mới (bao gồm cả chuẩn DICOM y tế và ảnh thông thường) qua 2 cách:
 
 ### Cách 1: Chẩn đoán trực tiếp trên Web Dashboard (Giao diện trực quan)
 1. Khởi chạy Dashboard:
@@ -188,22 +204,24 @@ Dự án đã được tích hợp đầy đủ pipeline chẩn đoán tự đ�
    streamlit run "Analysis Dashboard/dashboard.py"
    ```
 2. Trên thanh menu bên trái, chọn mục: **`New Diagnosis (Chẩn đoán ảnh mới)`**.
-3. Kéo thả hoặc tải lên ảnh chụp CT lồng ngực (định dạng `.jpg`, `.png`, `.jpeg`).
-4. Nhấn nút **🚀 Run Clinical Diagnosis**.
-5. Hệ thống sẽ tự động hiển thị:
-   - Kết quả phân loại: **COVID-19** hay **Normal** kèm thanh đo phần trăm xác suất rủi ro.
-   - Ảnh gốc CT, Mặt nạ phân vùng phổi tạo bởi **U-Net** và Ảnh phủ màu tổn thương (Cyan Overlay).
-   - Bảng 24 đặc trưng Radiomics trích xuất trực tiếp từ ảnh.
+3. Tại ô chọn file, bấm **Browse files** và chọn một hoặc nhiều file ảnh CT / DICOM (ví dụ chọn trọn bộ 11 file trong `sample_data/data-test/Tuong_20230828_*.dcm`).
+4. Tùy chỉnh tốc độ chạy GIF (mặc định 300ms/lát) và kiểu hiển thị (Song song hoặc Lớp phủ).
+5. Nhấn nút **🚀 Thực hiện Chẩn đoán Lâm sàng Toàn diện**.
+6. Hệ thống sẽ tự động hiển thị:
+   - **Kết luận lâm sàng tổng thể**: Đưa ra kết luận ca bệnh âm tính/dương tính kèm xác suất trung bình.
+   - **Ảnh động trực quan Cine-Loop GIF**: Hoạt ảnh liên tục quét qua các lát cắt CT kèm nút tải xuống file GIF.
+   - **Bảng Tổng hợp Kết quả Chẩn đoán**: Chi tiết từng lát cắt kèm nút tải báo cáo dạng CSV.
+   - **Khảo sát Chi tiết**: Khám phá ảnh gốc, mặt nạ U-Net, lớp phủ Cyan, đồ thị xác suất và 24 đặc trưng Radiomics của từng lát cắt cụ thể.
 
 ### Cách 2: Chạy chẩn đoán qua dòng lệnh (CLI Script - `predict.py`)
-Phù hợp khi cần tích hợp vào backend hoặc chạy chẩn đoán hàng loạt thư mục ảnh:
+Phù hợp khi cần tích hợp vào backend, xử lý tự động theo batch hoặc chạy chẩn đoán hàng loạt thư mục ảnh:
 
-- **Chẩn đoán 1 ảnh:**
+- **Chẩn đoán 1 ảnh (Ảnh thường hoặc DICOM):**
   ```bash
-  python predict.py --image "duong_dan/toi/anh_ct.jpg" --output "ket_qua_chan_doan"
+  python predict.py --image "sample_data/data-test/Tuong_20230828_52.dcm" --output output/
   ```
-- **Chẩn đoán hàng loạt cả thư mục ảnh:**
+- **Chẩn đoán hàng loạt cả thư mục ảnh / toàn bộ chuỗi cắt lớp DICOM:**
   ```bash
-  python predict.py --dir "thu_muc_chua_anh_ct/" --output "ket_qua_chan_doan"
+  python predict.py --dir "sample_data/data-test" --output output/
   ```
-  Kết quả mặt nạ phổi (`_mask.png`), ảnh phủ màu (`_overlay.png`) và file tổng hợp kết quả (`batch_diagnosis_summary.csv`) sẽ được tự động lưu vào thư mục đầu ra.
+  Kết quả mặt nạ phổi (`_mask.png`), ảnh phủ màu (`_overlay.png`) và file bảng tổng hợp kết quả (`batch_diagnosis_summary.csv`) sẽ được tự động lưu vào thư mục `output/`.

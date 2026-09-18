@@ -169,6 +169,7 @@ output/*
 !output/.gitkeep
 batch_test_results/
 test_results/
+results/
 test_dicom_output/
 diagnosis_results/
 

@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Union, Tuple, Dict, Any
+from typing import Union, Tuple, Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -280,6 +280,54 @@ def create_overlay(image_gray: np.ndarray, mask: np.ndarray, alpha: float = 0.35
     return np.clip(overlay, 0, 255).astype(np.uint8)
 
 
+def create_cine_gif(results_list: list, duration_ms: int = 300, side_by_side: bool = True) -> bytes:
+    """
+    Generate an animated Cine-Loop GIF from a sequence of CT scan slices.
+    If side_by_side is True, each frame renders [Original CT Scan | Cyan Lung Mask Overlay].
+    """
+    import io
+    from PIL import ImageDraw
+
+    frames = []
+    target_size = (480, 480)
+
+    for idx, res in enumerate(results_list):
+        orig = Image.fromarray(res["image_gray"]).convert("RGB").resize(target_size, Image.Resampling.BILINEAR)
+        overlay = Image.fromarray(res["overlay"]).convert("RGB").resize(target_size, Image.Resampling.BILINEAR)
+
+        slice_name = res.get("filename", f"Slice #{idx + 1}")
+        status = res.get("prediction", "N/A")
+        conf = res.get("confidence", 0.0)
+
+        if side_by_side:
+            combo = Image.new("RGB", (960, 480), color=(10, 15, 25))
+            combo.paste(orig, (0, 0))
+            combo.paste(overlay, (480, 0))
+
+            draw = ImageDraw.Draw(combo)
+            draw.text((15, 15), f"{slice_name} (CT Goc)", fill=(255, 255, 255))
+            tag_color = (220, 50, 50) if status == "COVID-19" else (50, 220, 100)
+            draw.text((495, 15), f"{status} ({conf:.1f}%)", fill=tag_color)
+            frames.append(combo)
+        else:
+            draw = ImageDraw.Draw(overlay)
+            tag_color = (220, 50, 50) if status == "COVID-19" else (0, 230, 255)
+            draw.text((15, 15), f"{slice_name} - {status} ({conf:.1f}%)", fill=tag_color)
+            frames.append(overlay)
+
+    buf = io.BytesIO()
+    if frames:
+        frames[0].save(
+            buf,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=duration_ms,
+            loop=0
+        )
+    return buf.getvalue()
+
+
 def is_dicom_input(source: Any) -> bool:
     """Detect if input is a DICOM file or byte stream."""
     if isinstance(source, (str, Path)):
@@ -382,7 +430,7 @@ def load_dicom_image(dcm_source: Any) -> Tuple[np.ndarray, Dict[str, Any]]:
         raise ImportError("To process DICOM files (.dcm), please install pydicom: 'pip install pydicom'")
 
 
-def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray, Any]) -> Dict[str, Any]:
+def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray, Any], filename: Optional[str] = None) -> Dict[str, Any]:
     """
     End-to-end diagnosis pipeline for a new chest CT/X-ray scan (JPG, PNG, DICOM):
     1. Preprocess input image (including DICOM HU lung windowing).
@@ -391,10 +439,17 @@ def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray, Any]) 
     4. Predict COVID-19 vs Normal classification probability.
     """
     dicom_meta = {}
+    actual_filename = filename or (str(image_input.name) if hasattr(image_input, 'name') else (Path(image_input).name if isinstance(image_input, (str, Path)) else "Scan"))
 
     # 1. Convert input to grayscale numpy array (supports DICOM, PIL, and standard formats)
-    if is_dicom_input(image_input):
-        logger.info("DICOM input format detected. Applying Hounsfield lung windowing...")
+    is_dcm = False
+    if actual_filename and str(actual_filename).lower().endswith(('.dcm', '.dicom')):
+        is_dcm = True
+    elif is_dicom_input(image_input):
+        is_dcm = True
+
+    if is_dcm:
+        logger.info(f"DICOM input format detected ({actual_filename}). Applying Hounsfield lung windowing...")
         img_gray, dicom_meta = load_dicom_image(image_input)
     elif isinstance(image_input, (str, Path)):
         pil_img = Image.open(image_input).convert('L')
@@ -443,6 +498,7 @@ def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray, Any]) 
 
     return {
         "status": "success",
+        "filename": actual_filename,
         "prediction": pred_label,
         "probability_normal": float(prob[0]),
         "probability_covid": float(prob[1]),

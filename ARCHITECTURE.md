@@ -20,13 +20,15 @@ Hệ thống phục vụ 2 nhóm mục đích chính:
 ```mermaid
 graph TD
     subgraph Layer1["1. TẦNG THU NHẬP & LƯU TRỮ DỮ LIỆU (Data & Storage Layer)"]
-        A1["Ảnh CT / X-quang Phổi"] --> A2["SQLite DB: radiomics_data.db"]
-        A3["extracted_features_Covid.csv"] --> A2
-        A4["extracted_features_normal.csv"] --> A2
+        A1["Ảnh CT / X-quang Phổi (DICOM, PNG, JPG)"] --> A2["SQLite DB: radiomics_data.db"]
+        A3["extracted_features_Covid.csv (2.246 mẫu)"] --> A2
+        A4["extracted_features_normal.csv (1.203 mẫu)"] --> A2
     end
 
-    subgraph Layer2["2. TẦNG PHÂN VÙNG HỌC SÂU (Deep Learning Segmentation Layer)"]
-        B1["Ảnh CT gốc (Grayscale)"] --> B2["Tiền xử lý (128x128, Normalization)"]
+    subgraph Layer2["2. TẦNG TIỀN XỬ LÝ & PHÂN VÙNG HỌC SÂU (Deep Learning Segmentation Layer)"]
+        B0["DICOM Parsing: Hounsfield Units (HU)<br/>Cửa sổ phổi (WL: -600, WW: 1500 HU)"]
+        B1["Ảnh CT mức xám (Grayscale 8-bit)"] --> B2["Tiền xử lý (128x128, Chuẩn hóa 0-1)"]
+        B0 --> B1
         B2 --> B3["U-Net Convolutional Network<br/>(lung_segmentation_unet .h5)"]
         B3 --> B4["Mặt nạ nhị phân phổi (Binary Lung Mask)"]
     end
@@ -46,8 +48,8 @@ graph TD
     end
 
     subgraph Layer5["5. TẦNG GIAO DIỆN & TRÌNH DIỄN (Presentation & Delivery Layer)"]
-        E1["Web Dashboard (Streamlit & Plotly)"]
-        E2["CLI Prediction Tool (predict.py)"]
+        E1["Web Dashboard (Streamlit & Plotly)<br/>- Upload hàng loạt ảnh / series DICOM<br/>- Bảng Tổng hợp & Kết luận lâm sàng<br/>- Hoạt ảnh Cine-Loop GIF trực quan"]
+        E2["CLI Prediction Tool (predict.py)<br/>- Batch processing thư mục ảnh/DICOM<br/>- Xuất mask, overlay & batch summary CSV"]
         D4 --> E1
         D4 --> E2
         B4 --> E1
@@ -72,7 +74,12 @@ graph TD
 
 ---
 
-### 3.2. Tầng 2: Phân vùng phổi bằng Học sâu (Deep Learning Segmentation Layer)
+### 3.2. Tầng 2: Tiền xử lý & Phân vùng phổi bằng Học sâu (Deep Learning Segmentation Layer)
+- **Tiền xử lý ảnh DICOM & Cửa sổ phổi y tế (Lung Windowing)**:
+  - Tự động nhận diện file y tế DICOM (`.dcm`, `.dicom`) hoặc file ảnh tiêu chuẩn (`.jpg`, `.png`).
+  - Trích xuất thẻ DICOM (`RescaleSlope`, `RescaleIntercept`, `WindowCenter`, `WindowWidth`) và chuyển đổi pixel sang đơn vị Hounsfield:
+    $$\text{HU} = \text{PixelValue} \times \text{RescaleSlope} + \text{RescaleIntercept}$$
+  - Áp dụng cửa sổ nhu mô phổi tiêu chuẩn ($WL = -600\text{ HU}, WW = 1500\text{ HU}$, tức dải giá trị $[-1350, +150]\text{ HU}$) để làm nổi bật nhu mô phổi và tổn thương kính mờ (Ground-Glass Opacities) / đông đặc (Consolidation) trước khi co dãn về thang mức xám 8-bit $[0, 255]$.
 - **Kiến trúc mạng**: **2D U-Net** gồm 2 nhánh:
   - *Contracting Path (Encoder)*: 5 khối Conv2D (64, 128, 256, 512, 1024 bộ lọc) kèm Max Pooling (2x2) để trích xuất ngữ cảnh.
   - *Expanding Path (Decoder)*: 4 khối Conv2DTranspose kết hợp Skip Connections để ghép nối đặc trưng không gian và khôi phục độ phân giải.
@@ -82,7 +89,7 @@ graph TD
 - **Hậu xử lý**: Ngưỡng nhị phân $Threshold \ge 0.5$ tạo mask nhị phân (`{0, 255}`), sau đó nội suy đa thức bậc gần nhất (*Nearest Neighbor*) về kích thước ảnh gốc.
 
 ```
-Input (H x W) ──> Resize (128x128) ──> U-Net Model ──> Output Prob Map ──> Threshold (0.5) ──> Binary Mask (H x W)
+Input Scan (DICOM / Image) ──> HU Lung Windowing ──> Grayscale (8-bit) ──> Resize (128x128) ──> U-Net ──> Binary Mask (H x W)
 ```
 
 ---
@@ -123,10 +130,16 @@ Hệ thống cung cấp 2 phương thức tương tác:
    - Cung cấp 3 trang chức năng:
      - **Textual Analysis**: Báo cáo thống kê mô tả, kiểm định giả thuyết t-Test, Anderson-Darling, Kolmogorov-Smirnov, báo cáo PCA và bảng đánh giá chéo (Cross-Validation).
      - **Visual Comparisons**: Heatmap tương quan đa chiều, Box plot, QQ-plot, đồ thị ROC-AUC và biểu đồ độ quan trọng đặc trưng (Feature Importance).
-     - **New Diagnosis**: Kéo thả ảnh mới để chẩn đoán lâm sàng thời gian thực.
+     - **New Diagnosis**: Chẩn đoán lâm sàng ảnh mới với khả năng:
+       - Tải lên cùng lúc nhiều ảnh / chuỗi cắt lớp DICOM (`accept_multiple_files=True`).
+       - Tự động sắp xếp lát cắt theo thứ tự tự nhiên (Natural Numerical Sort).
+       - Xuất **Kết luận lâm sàng tổng thể** cấp ca bệnh (Ví dụ: *"Kết luận lâm sàng: Cả 11 lát cắt của bệnh nhân đều được chẩn đoán là NORMAL, với xác suất trung bình 71.3%"*).
+       - Tạo và phát **Ảnh động trực quan Cine-Loop GIF** quét qua toàn bộ các lát cắt (hỗ trợ hiển thị song song và tải GIF về máy).
+       - Bảng tổng hợp kết quả chẩn đoán và nút xuất file báo cáo CSV.
+       - Trình khảo sát chi tiết từng lát cắt (Slice Explorer).
 2. **Công cụ Dòng lệnh Độc lập ([`predict.py`](file:///d:/Work/Clients/A_Giap/code_review/CAD-Analysis-Dashboard/predict.py))**:
-   - Dành cho chẩn đoán đơn lẻ hoặc xử lý hàng loạt theo thư mục ảnh.
-   - Tự động lưu ảnh mặt nạ (`_mask.png`), ảnh phủ màu (`_overlay.png`) và file tổng hợp kết quả (`batch_diagnosis_summary.csv`).
+   - Dành cho chẩn đoán đơn lẻ (`--image`) hoặc xử lý hàng loạt theo thư mục ảnh/DICOM (`--dir`).
+   - Tự động lưu ảnh mặt nạ (`_mask.png`), ảnh phủ màu (`_overlay.png`) và file tổng hợp kết quả (`batch_diagnosis_summary.csv`) vào thư mục `output/`.
 
 ---
 
@@ -135,24 +148,37 @@ Hệ thống cung cấp 2 phương thức tương tác:
 ```mermaid
 sequenceDiagram
     autonumber
-    actor BacSi as Bác sĩ / Người dùng
-    participant UI as Dashboard / predict.py
+    actor BacSi as Bác sĩ / Kỹ thuật viên
+    participant UI as Web Dashboard / predict.py
     participant Engine as modules/inference.py
+    participant DICOM as DICOM HU & Windowing
     participant UNet as U-Net DL Model
     participant Rad as PyRadiomics Extractor
     participant ML as Random Forest Pipeline
+    participant GIF as Cine-Loop Generator
 
-    BacSi->>UI: Tải lên ảnh chụp CT phổi (JPG / PNG)
-    UI->>Engine: diagnose_image(image_input)
-    Engine->>UNet: segment_lung(image_gray)
-    UNet-->>Engine: Trả về Lung Mask nhị phân (0 / 255)
-    Engine->>Rad: extract_radiomics(image_gray, mask)
-    Rad-->>Engine: 24 vector đặc trưng Radiomics
-    Engine->>ML: clf.predict_proba(features_df)
-    ML-->>Engine: Xác suất COVID-19 vs Normal
-    Engine->>Engine: Tạo ảnh phủ màu Cyan Overlay
-    Engine-->>UI: Kết quả (Diagnosis, Confidence %, Mask, Overlay, Features)
-    UI-->>BacSi: Hiển thị giao diện chẩn đoán trực quan
+    BacSi->>UI: Tải lên chuỗi ảnh CT (DICOM .dcm / PNG / JPG)
+    UI->>UI: Sắp xếp lát cắt theo thứ tự số tự nhiên
+    loop Xử lý từng lát cắt (Slice 1 -> N)
+        UI->>Engine: diagnose_image(slice_stream, filename)
+        alt Định dạng DICOM
+            Engine->>DICOM: Chuyển đổi HU & Cửa sổ phổi (-600/1500 HU)
+            DICOM-->>Engine: Ảnh mức xám 8-bit + Metadata
+        end
+        Engine->>UNet: segment_lung(image_gray)
+        UNet-->>Engine: Trả về Binary Lung Mask (0 / 255)
+        Engine->>Rad: extract_radiomics(image_gray, mask)
+        Rad-->>Engine: 24 vector đặc trưng Radiomics
+        Engine->>ML: clf.predict_proba(features_df)
+        ML-->>Engine: Xác suất COVID-19 vs Normal
+        Engine->>Engine: Tạo ảnh phủ màu Cyan Overlay
+        Engine-->>UI: Kết quả lát cắt (Label, Prob, Mask, Overlay, Biomarkers)
+    end
+
+    UI->>UI: Tính toán thống kê tổng thể & Kết luận lâm sàng
+    UI->>GIF: create_cine_gif(results_list, duration_ms, side_by_side)
+    GIF-->>UI: File ảnh động Cine-Loop GIF (bytes)
+    UI-->>BacSi: Hiển thị: Kết luận lâm sàng + Ảnh động GIF + Bảng CSV + Khảo sát lát cắt
 ```
 
 ---
@@ -183,19 +209,22 @@ CAD-Analysis-Dashboard/
 │       ├── lung_segmentation_unet .h5        # Trọng số mô hình U-Net (~372MB)
 │       └── predictions.npy                   # Kết quả dự đoán mask
 │
+├── models/                           # Thư mục lưu trữ mô hình đã đóng gói
+│   └── cad_classifier.joblib         # Pipeline Random Forest đã train & chuẩn hóa
+│
 ├── modules/                          # Thư viện logic xử lý cốt lõi
 │   ├── eda.py                        # Các hàm tính toán thống kê, EDA, PCA
-│   └── inference.py                  # Engine chẩn đoán ảnh mới End-to-End
+│   └── inference.py                  # Engine chẩn đoán ảnh mới End-to-End (DICOM, U-Net, Radiomics, GIF)
+│
+├── output/                           # Thư mục lưu trữ kết quả đầu ra (mask, overlay, GIF, CSV)
+├── predict.py                        # Công cụ CLI chẩn đoán ảnh mới
 │
 ├── sample_data/                      # Dữ liệu mẫu phục vụ kiểm thử
+│   ├── data-test/                    # 11 lát cắt CT DICOM lâm sàng thực tế (.dcm)
 │   ├── create_sample.py              # Script sinh ảnh lát cắt CT mô phỏng
 │   └── sample_chest_ct.jpg           # Ảnh lát cắt CT mẫu
 │
-├── models/                           # Thư mục lưu trữ mô hình đã đóng gói
-│   └── cad_classifier.joblib         # Pipeline Random Forest đã train
-│
-├── predict.py                        # Công cụ CLI chẩn đoán ảnh mới
-├── requirements.txt                  # Thư viện cho Dashboard & EDA
+├── requirements.txt                  # Thư viện cho Dashboard, DICOM & EDA
 ├── requirements-ml.txt               # Thư viện bổ sung cho Deep Learning
 ├── SETUP_GUIDE.md                    # Hướng dẫn cài đặt & vận hành chi tiết
 ├── ARCHITECTURE.md                   # Tài liệu kiến trúc hệ thống (File này)

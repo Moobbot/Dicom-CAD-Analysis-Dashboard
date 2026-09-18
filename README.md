@@ -34,17 +34,26 @@ The end-to-end pipeline integrates:
 - **Interactive Visual Comparison**:
   - Plotly interactive correlation heatmaps, top correlated feature bar charts, box plots, and QQ-plots before/after normalization (Min-Max, Z-score, Max-Abs).
 
+- **Deep Learning & Radiomics Clinical Diagnosis (New Image Diagnosis)**:
+  - **Full DICOM Support (`.dcm`, `.dicom`)**: Reads clinical CT scans, applies Hounsfield Unit (HU) conversion with medical Lung Windowing (WL: -600, WW: 1500 HU). Standard image formats (`.jpg`, `.png`) are also fully supported.
+  - **Multi-Image / Multi-Slice Upload**: Batch upload sequential CT slices (`accept_multiple_files=True`) with automatic natural numerical sorting.
+  - **Overall Clinical Conclusion**: Patient-level diagnostic verdict and confidence aggregation (e.g., *"Cả 11 lát cắt của bệnh nhân đều được chẩn đoán là NORMAL, với xác suất trung bình 71.3%"*).
+  - **Animated Cine-Loop GIF**: Generates animated GIF loops scrolling through the CT series with side-by-side or mask overlay views, adjustable frame rate, and one-click GIF download.
+  - **Summary Diagnosis Table & CSV Export**: Per-slice diagnosis breakdown with probability scores, confidence ratings, and instant CSV export.
+  - **Individual Slice Inspector**: Detailed examination of lung mask segmentation, cyan lesion overlay, 24 extracted radiomic biomarkers, and DICOM metadata header.
+
 ---
 
 ## Architecture & Technology Stack
 
 | Component | Technology | Description |
 | :--- | :--- | :--- |
-| **Frontend Dashboard** | Streamlit, Plotly Express | Interactive web dashboard and reactive data controls |
-| **Backend & Modeling** | Python, Scikit-learn, SciPy | Statistical tests, PCA, and classification models |
-| **Deep Learning** | TensorFlow / Keras (U-Net) | 2D U-Net architecture for lung segmentation |
-| **Feature Extraction** | PyRadiomics, SimpleITK | Angle-wise (0°, 45°, 90°, 135°) radiomics extraction |
-| **Database** | SQLite, SQLAlchemy | Persistent storage of extracted radiomic features |
+| **Frontend Dashboard** | Streamlit, Plotly Express | Interactive web dashboard, multi-image diagnosis, and reactive controls |
+| **Backend & Modeling** | Python, Scikit-learn, SciPy | Statistical tests, PCA, and calibrated Random Forest classification |
+| **Deep Learning** | TensorFlow / Keras (U-Net) | 2D U-Net architecture for automated lung parenchyma segmentation |
+| **Medical Imaging** | pydicom, Pillow, OpenCV | DICOM parsing, Hounsfield Unit conversion, Cine-Loop GIF generation |
+| **Feature Extraction** | PyRadiomics, SimpleITK | 24 core radiomic texture (GLCM, GLDM, GLSZM, GLRLM) and first-order features |
+| **Database** | SQLite, SQLAlchemy | Persistent storage of extracted radiomic features (3,449 samples) |
 
 ---
 
@@ -72,7 +81,7 @@ source venv/bin/activate
 
 ### 3. Install Dependencies
 ```bash
-# Install core requirements for the Web Dashboard & EDA:
+# Install core requirements for the Web Dashboard, DICOM processing & Inference:
 pip install -r requirements.txt
 
 # (Optional) Install full ML & Radiomics extraction requirements:
@@ -84,6 +93,15 @@ pip install -r requirements-ml.txt
 streamlit run "Analysis Dashboard/dashboard.py"
 ```
 The application will open automatically in your browser at `http://localhost:8501`.
+
+### 5. Run CLI Diagnosis (Command Line)
+```bash
+# Diagnose a single CT scan or DICOM slice:
+python predict.py --image "sample_data/data-test/Tuong_20230828_52.dcm" --output output/
+
+# Batch diagnose an entire CT scan directory:
+python predict.py --dir "sample_data/data-test" --output output/
+```
 
 For detailed Vietnamese instructions and troubleshooting, see [SETUP_GUIDE.md](SETUP_GUIDE.md).
 
@@ -97,19 +115,26 @@ CAD-Analysis-Dashboard/
 │   ├── dashboard.py                  # Main Streamlit Dashboard application
 │   ├── database_setup.py             # Script to load CSV features into SQLite DB
 │   ├── ex.py                         # SQLite query sample test
-│   ├── extracted_features_Covid.csv  # Extracted radiomics for COVID cases
-│   ├── extracted_features_normal.csv # Extracted radiomics for Normal cases
+│   ├── extracted_features_Covid.csv  # Extracted radiomics for COVID cases (2,246 samples)
+│   ├── extracted_features_normal.csv # Extracted radiomics for Normal cases (1,203 samples)
 │   ├── params.yaml                   # PyRadiomics extraction parameters
 │   └── radiomics_data.db             # SQLite database storing feature table
 ├── ML/
 │   ├── Feature Extraction/           # PyRadiomics extraction notebooks
 │   ├── Random_Classifier.ipynb       # ML experiments (Random Forest, SMOTE, etc.)
-│   └── UNET Training/                # U-Net segmentation training and weights
+│   └── UNET Training/                # U-Net segmentation training and weights (.h5)
+├── models/
+│   └── cad_classifier.joblib         # Serialized Random Forest classification pipeline
 ├── modules/
 │   ├── eda.py                        # EDA, statistical analysis & ML pipeline
-│   └── inference.py                  # End-to-end inference engine for new images
+│   └── inference.py                  # End-to-end inference engine (U-Net + Radiomics + DICOM + GIF)
+├── output/                           # Output directory for saved masks, overlays, and batch CSV
 ├── predict.py                        # Standalone CLI tool for single/batch diagnosis
-├── requirements.txt                  # Dependencies for Dashboard & EDA
+├── sample_data/
+│   ├── data-test/                    # 11 clinical DICOM CT slices for testing
+│   ├── create_sample.py              # Script to generate synthetic test slices
+│   └── sample_chest_ct.jpg           # Sample CT scan image
+├── requirements.txt                  # Dependencies for Dashboard, DICOM & EDA
 ├── requirements-ml.txt               # Dependencies for DL & Radiomics
 ├── ARCHITECTURE.md                   # Complete system architecture specification
 ├── SETUP_GUIDE.md                    # Detailed Vietnamese setup guide
