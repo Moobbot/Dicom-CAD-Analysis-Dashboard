@@ -280,28 +280,146 @@ def create_overlay(image_gray: np.ndarray, mask: np.ndarray, alpha: float = 0.35
     return np.clip(overlay, 0, 255).astype(np.uint8)
 
 
-def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray]) -> Dict[str, Any]:
+def is_dicom_input(source: Any) -> bool:
+    """Detect if input is a DICOM file or byte stream."""
+    if isinstance(source, (str, Path)):
+        if str(source).lower().endswith(('.dcm', '.dicom')):
+            return True
+        try:
+            with open(source, 'rb') as f:
+                f.seek(128)
+                return f.read(4) == b'DICM'
+        except Exception:
+            return False
+    if hasattr(source, 'name') and str(source.name).lower().endswith(('.dcm', '.dicom')):
+        return True
+    if hasattr(source, 'seek') and hasattr(source, 'read'):
+        try:
+            pos = source.tell()
+            source.seek(128)
+            magic = source.read(4)
+            source.seek(pos)
+            return magic == b'DICM'
+        except Exception:
+            pass
+    return False
+
+
+def load_dicom_image(dcm_source: Any) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
-    End-to-end diagnosis pipeline for a new chest CT/X-ray scan:
-    1. Preprocess input image.
+    Read DICOM scan, convert to Hounsfield Units (HU),
+    apply standard Lung Window (WL=-600, WW=1500) and return uint8 2D grayscale array + metadata.
+    """
+    metadata = {}
+    try:
+        import pydicom
+        if isinstance(dcm_source, (str, Path)):
+            ds = pydicom.dcmread(str(dcm_source))
+        else:
+            if hasattr(dcm_source, 'seek'):
+                dcm_source.seek(0)
+            ds = pydicom.dcmread(dcm_source)
+
+        metadata = {
+            "Modality": str(getattr(ds, "Modality", "CT")),
+            "PatientID": str(getattr(ds, "PatientID", "Anonymous")),
+            "BodyPartExamined": str(getattr(ds, "BodyPartExamined", "CHEST")),
+            "SliceThickness": str(getattr(ds, "SliceThickness", "N/A")),
+            "Rows": getattr(ds, "Rows", None),
+            "Columns": getattr(ds, "Columns", None)
+        }
+
+        # Ensure PhotometricInterpretation is defined (standard CT is MONOCHROME2)
+        if not hasattr(ds, "PhotometricInterpretation") or not ds.PhotometricInterpretation:
+            ds.PhotometricInterpretation = "MONOCHROME2"
+
+        pixel_array = ds.pixel_array.astype(np.float32)
+        if pixel_array.ndim == 3:
+            pixel_array = pixel_array[pixel_array.shape[0] // 2]
+
+        # Convert raw pixel values to Hounsfield Units (HU)
+        slope = float(getattr(ds, 'RescaleSlope', 1.0))
+        intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+        hu_image = pixel_array * slope + intercept
+
+        # Apply standard Lung Window: Center = -600 HU, Width = 1500 HU
+        wc = getattr(ds, 'WindowCenter', -600)
+        ww = getattr(ds, 'WindowWidth', 1500)
+        try:
+            wc = float(wc[0]) if hasattr(wc, '__iter__') else float(wc)
+            ww = float(ww[0]) if hasattr(ww, '__iter__') else float(ww)
+        except Exception:
+            wc, ww = -600.0, 1500.0
+
+        if ww <= 0:
+            wc, ww = -600.0, 1500.0
+
+        metadata["WindowCenter"] = wc
+        metadata["WindowWidth"] = ww
+
+        lower = wc - ww / 2.0
+        upper = wc + ww / 2.0
+        windowed = np.clip(hu_image, lower, upper)
+        img_8bit = ((windowed - lower) / (upper - lower) * 255.0).astype(np.uint8)
+        return img_8bit, metadata
+
+    except ImportError:
+        logger.info("pydicom not installed. Trying SimpleITK fallback...")
+        try:
+            import SimpleITK as sitk
+            if isinstance(dcm_source, (str, Path)):
+                sitk_img = sitk.ReadImage(str(dcm_source))
+                arr = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
+                if arr.ndim == 3:
+                    arr = arr[arr.shape[0] // 2]
+                windowed = np.clip(arr, -1350, 150)
+                img_8bit = ((windowed + 1350) / 1500.0 * 255.0).astype(np.uint8)
+                metadata["Modality"] = "CT"
+                return img_8bit, metadata
+        except Exception as sitk_err:
+            logger.error(f"SimpleITK failed to read DICOM: {sitk_err}")
+
+        raise ImportError("To process DICOM files (.dcm), please install pydicom: 'pip install pydicom'")
+
+
+def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray, Any]) -> Dict[str, Any]:
+    """
+    End-to-end diagnosis pipeline for a new chest CT/X-ray scan (JPG, PNG, DICOM):
+    1. Preprocess input image (including DICOM HU lung windowing).
     2. Segment lung parenchyma using U-Net.
     3. Extract 24 radiomics texture/first-order features.
     4. Predict COVID-19 vs Normal classification probability.
     """
-    # 1. Convert input to grayscale numpy array
-    if isinstance(image_input, (str, Path)):
+    dicom_meta = {}
+
+    # 1. Convert input to grayscale numpy array (supports DICOM, PIL, and standard formats)
+    if is_dicom_input(image_input):
+        logger.info("DICOM input format detected. Applying Hounsfield lung windowing...")
+        img_gray, dicom_meta = load_dicom_image(image_input)
+    elif isinstance(image_input, (str, Path)):
         pil_img = Image.open(image_input).convert('L')
+        img_gray = np.array(pil_img, dtype=np.uint8)
     elif isinstance(image_input, Image.Image):
         pil_img = image_input.convert('L')
+        img_gray = np.array(pil_img, dtype=np.uint8)
     elif isinstance(image_input, np.ndarray):
         if image_input.ndim == 3:
             pil_img = Image.fromarray(image_input).convert('L')
+            img_gray = np.array(pil_img, dtype=np.uint8)
         else:
-            pil_img = Image.fromarray(image_input.astype(np.uint8))
+            img_gray = image_input.astype(np.uint8)
+    elif hasattr(image_input, 'read'):
+        # Uploaded file stream (Streamlit / Flask)
+        try:
+            if hasattr(image_input, 'seek'):
+                image_input.seek(0)
+            pil_img = Image.open(image_input).convert('L')
+            img_gray = np.array(pil_img, dtype=np.uint8)
+        except Exception:
+            # Attempt DICOM reading on stream
+            img_gray, dicom_meta = load_dicom_image(image_input)
     else:
         raise ValueError("Unsupported image input type.")
-
-    img_gray = np.array(pil_img, dtype=np.uint8)
 
     # 2. Lung Segmentation
     mask = segment_lung(img_gray)
@@ -332,5 +450,6 @@ def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray]) -> Di
         "features": features_dict,
         "image_gray": img_gray,
         "mask": mask,
-        "overlay": overlay
+        "overlay": overlay,
+        "dicom_metadata": dicom_meta
     }

@@ -23,6 +23,7 @@ SQLAlchemy>=2.0.0
 PyYAML>=6.0
 joblib>=1.2.0
 
-# Image Processing & Utilities
+# Image Processing & Medical DICOM Utilities
 Pillow>=9.0.0
 opencv-python>=4.8.0
+pydicom>=2.4.0

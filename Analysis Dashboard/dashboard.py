@@ -273,20 +273,38 @@ elif page_selection == "New Diagnosis (Chẩn đoán ảnh mới)":
     from modules.inference import diagnose_image
     from PIL import Image
 
-    uploaded_file = st.file_uploader("Choose a Chest CT / X-ray image (JPG, PNG, JPEG):", type=["jpg", "jpeg", "png"])
+    uploaded_file = st.file_uploader("Choose a Chest CT / X-ray image (JPG, PNG, JPEG, DICOM .dcm):", type=["jpg", "jpeg", "png", "dcm", "dicom"])
 
     if uploaded_file is not None:
+        import io
+        from modules.inference import load_dicom_image, is_dicom_input
+        file_bytes = uploaded_file.getvalue()
+        is_dcm = uploaded_file.name.lower().endswith(('.dcm', '.dicom')) or is_dicom_input(io.BytesIO(file_bytes))
+        dcm_meta = {}
+
         col_img, col_info = st.columns([1, 2])
         with col_img:
-            preview_img = Image.open(uploaded_file)
-            st.image(preview_img, caption="Uploaded Scan Preview", width=250)
+            if is_dcm:
+                try:
+                    img_arr, dcm_meta = load_dicom_image(io.BytesIO(file_bytes))
+                    preview_img = Image.fromarray(img_arr)
+                    st.image(preview_img, caption=f"DICOM CT Scan Preview ({uploaded_file.name})", width=250)
+                except Exception as dcm_e:
+                    st.error(f"Error reading DICOM: {dcm_e}")
+                    preview_img = None
+            else:
+                preview_img = Image.open(io.BytesIO(file_bytes))
+                st.image(preview_img, caption=f"Scan Preview ({uploaded_file.name})", width=250)
+
         with col_info:
+            if is_dcm and dcm_meta:
+                st.success(f"**DICOM Detected**: Modality: `{dcm_meta.get('Modality', 'CT')}` | WL/WW: `{dcm_meta.get('WindowCenter', -600)}/{dcm_meta.get('WindowWidth', 1500)} HU`")
             st.info("Click the button below to execute the end-to-end pipeline (U-Net Segmentation -> 24 PyRadiomics Feature Extraction -> Random Forest Classification).")
             run_diag = st.button("🚀 Run Clinical Diagnosis", type="primary", use_container_width=True)
 
-        if run_diag:
+        if run_diag and preview_img is not None:
             with st.spinner("Processing scan: segmenting lung parenchyma and extracting radiomic biomarkers..."):
-                result = diagnose_image(preview_img)
+                result = diagnose_image(io.BytesIO(file_bytes))
 
             pred = result["prediction"]
             conf = result["confidence"]
@@ -332,5 +350,11 @@ elif page_selection == "New Diagnosis (Chẩn đoán ảnh mới)":
             st.subheader("3. Extracted Radiomic Texture Biomarkers (24 Features)")
             feat_df = pd.DataFrame(list(result["features"].items()), columns=["Radiomic Feature", "Computed Value"])
             st.dataframe(feat_df, use_container_width=True)
+
+            # Optional DICOM Metadata Expander
+            if result.get("dicom_metadata"):
+                with st.expander("📋 DICOM Scan Header & Clinical Metadata"):
+                    dcm_rows = [{"DICOM Tag": k, "Value": str(v)} for k, v in result["dicom_metadata"].items()]
+                    st.table(pd.DataFrame(dcm_rows))
 
     

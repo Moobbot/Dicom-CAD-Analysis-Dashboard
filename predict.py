@@ -67,29 +67,29 @@ def main():
     parser = argparse.ArgumentParser(description="CAD Radiomics Clinical Image Diagnosis Tool")
     parser.add_argument("--image", "-i", type=str, help="Path to single CT/Chest X-ray image")
     parser.add_argument("--dir", "-d", type=str, help="Path to directory containing images for batch diagnosis")
-    parser.add_argument("--output", "-o", type=str, default="diagnosis_results", help="Directory to save diagnosis outputs")
+    parser.add_argument("--output", "-o", type=str, default="output", help="Directory to save diagnosis outputs (default: output/)")
     args = parser.parse_args()
 
     if not args.image and not args.dir:
         print("[!] Please provide either --image or --dir. Use -h for help.")
         sys.exit(1)
 
-    output_dir = Path(args.output)
+    output_dir = Path(args.output).resolve()
 
     if args.image:
-        img_path = Path(args.image)
+        img_path = Path(args.image).resolve()
         if not img_path.is_file():
             print(f"[!] Image file not found: {img_path}")
             sys.exit(1)
         process_single_image(img_path, output_dir)
 
     elif args.dir:
-        dir_path = Path(args.dir)
+        dir_path = Path(args.dir).resolve()
         if not dir_path.is_dir():
             print(f"[!] Directory not found: {dir_path}")
             sys.exit(1)
 
-        valid_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+        valid_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".dcm", ".dicom"}
         image_files = [p for p in dir_path.iterdir() if p.suffix.lower() in valid_extensions]
 
         if not image_files:
