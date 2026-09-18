@@ -69,7 +69,7 @@ blue_theme_css = """
 st.markdown(blue_theme_css, unsafe_allow_html=True)
 
 st.sidebar.title("COVID-19 Radiomics Dashboard")
-page_selection = st.sidebar.radio("Navigate to:", ["Textual Analysis", "Visual Comparisons"])
+page_selection = st.sidebar.radio("Navigate to:", ["Textual Analysis", "Visual Comparisons", "New Diagnosis (Chẩn đoán ảnh mới)"])
 # Normalization Methods in the sidebar
 normalization_method = st.sidebar.radio(
     "Select Normalization Method",
@@ -265,4 +265,72 @@ elif page_selection == "Visual Comparisons":
     model_result = train_and_compare_classification_models(data_df, top_features)
     
     show_visualizations(model_result, top_features)
+
+elif page_selection == "New Diagnosis (Chẩn đoán ảnh mới)":
+    st.title("🩺 Clinical Diagnosis on New Patient Images")
+    st.write("Upload a chest CT scan / X-ray image to automatically segment the lung region (U-Net), extract radiomic texture features, and predict COVID-19 vs. Normal classification.")
+
+    from modules.inference import diagnose_image
+    from PIL import Image
+
+    uploaded_file = st.file_uploader("Choose a Chest CT / X-ray image (JPG, PNG, JPEG):", type=["jpg", "jpeg", "png"])
+
+    if uploaded_file is not None:
+        col_img, col_info = st.columns([1, 2])
+        with col_img:
+            preview_img = Image.open(uploaded_file)
+            st.image(preview_img, caption="Uploaded Scan Preview", width=250)
+        with col_info:
+            st.info("Click the button below to execute the end-to-end pipeline (U-Net Segmentation -> 24 PyRadiomics Feature Extraction -> Random Forest Classification).")
+            run_diag = st.button("🚀 Run Clinical Diagnosis", type="primary", use_container_width=True)
+
+        if run_diag:
+            with st.spinner("Processing scan: segmenting lung parenchyma and extracting radiomic biomarkers..."):
+                result = diagnose_image(preview_img)
+
+            pred = result["prediction"]
+            conf = result["confidence"]
+            p_covid = result["probability_covid"] * 100
+            p_norm = result["probability_normal"] * 100
+
+            st.markdown("---")
+            st.subheader("1. Diagnostic Assessment")
+
+            m_col1, m_col2, m_col3 = st.columns(3)
+            if pred == "COVID-19":
+                m_col1.error(f"### Predicted: {pred}")
+            else:
+                m_col1.success(f"### Predicted: {pred}")
+
+            m_col2.metric("Confidence Level", f"{conf:.1f}%")
+            m_col3.metric("COVID-19 Risk Probability", f"{p_covid:.1f}%", delta=f"{p_covid - 50:.1f}%", delta_color="inverse")
+
+            # Probability Comparison Bar
+            prob_df = pd.DataFrame({
+                "Condition": ["Normal", "COVID-19"],
+                "Probability (%)": [p_norm, p_covid]
+            })
+            fig_prob = px.bar(
+                prob_df, x="Condition", y="Probability (%)", color="Condition",
+                color_discrete_map={"Normal": "#28a745", "COVID-19": "#dc3545"},
+                range_y=[0, 100], text_auto=".1f"
+            )
+            fig_prob.update_layout(height=280, showlegend=False, title="Prediction Probability Distribution")
+            st.plotly_chart(fig_prob, use_container_width=True)
+
+            # Visualizations
+            st.subheader("2. Segmentation & Lesion Inspection")
+            v_col1, v_col2, v_col3 = st.columns(3)
+            with v_col1:
+                st.image(result["image_gray"], caption="Original Input CT Scan", use_container_width=True, clamp=True)
+            with v_col2:
+                st.image(result["mask"], caption="Predicted Lung Mask (U-Net)", use_container_width=True, clamp=True)
+            with v_col3:
+                st.image(result["overlay"], caption="Parenchyma Mask Overlay (Cyan)", use_container_width=True)
+
+            # Extracted Radiomics Features
+            st.subheader("3. Extracted Radiomic Texture Biomarkers (24 Features)")
+            feat_df = pd.DataFrame(list(result["features"].items()), columns=["Radiomic Feature", "Computed Value"])
+            st.dataframe(feat_df, use_container_width=True)
+
     

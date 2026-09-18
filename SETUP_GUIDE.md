@@ -175,3 +175,35 @@ CAD-Analysis-Dashboard/
 | `error: Microsoft Visual C++ 14.0 or greater is required` khi cài `pyradiomics` | Thiếu trình biên dịch C++ trên Windows khi build từ source. | Cài đặt **Visual Studio C++ Build Tools** hoặc dùng conda: `conda install -c conda-forge pyradiomics`. Nếu chỉ chạy Dashboard, không cần cài pyradiomics. |
 | `ModuleNotFoundError: No module named 'numpy'` khi build `pyradiomics` | PyPI package `pyradiomics-3.0.1` thiếu khai báo build dependency trong `pyproject.toml` nên pip build isolation không có numpy. | 1. Nếu chỉ chạy Dashboard: chỉ cần chạy `pip install -r requirements.txt` (không cần pyradiomics).<br>2. Nếu cần pyradiomics: chạy `pip install wheel numpy` trước, sau đó chạy `pip install pyradiomics --no-build-isolation` (hoặc dùng conda). |
 | Port 8501 đã bị chiếm dụng | Có một phiên bản Streamlit khác đang chạy ngầm. | Chạy lệnh chỉ định cổng khác: `streamlit run "Analysis Dashboard/dashboard.py" --server.port 8502`. |
+
+---
+
+## 7. Hướng dẫn chạy chẩn đoán với ảnh mới (Inference on New Images)
+
+Dự án đã được tích hợp đầy đủ pipeline chẩn đoán tự động cho ảnh mới qua 2 cách:
+
+### Cách 1: Chẩn đoán trực tiếp trên Web Dashboard (Giao diện trực quan)
+1. Khởi chạy Dashboard:
+   ```bash
+   streamlit run "Analysis Dashboard/dashboard.py"
+   ```
+2. Trên thanh menu bên trái, chọn mục: **`New Diagnosis (Chẩn đoán ảnh mới)`**.
+3. Kéo thả hoặc tải lên ảnh chụp CT lồng ngực (định dạng `.jpg`, `.png`, `.jpeg`).
+4. Nhấn nút **🚀 Run Clinical Diagnosis**.
+5. Hệ thống sẽ tự động hiển thị:
+   - Kết quả phân loại: **COVID-19** hay **Normal** kèm thanh đo phần trăm xác suất rủi ro.
+   - Ảnh gốc CT, Mặt nạ phân vùng phổi tạo bởi **U-Net** và Ảnh phủ màu tổn thương (Cyan Overlay).
+   - Bảng 24 đặc trưng Radiomics trích xuất trực tiếp từ ảnh.
+
+### Cách 2: Chạy chẩn đoán qua dòng lệnh (CLI Script - `predict.py`)
+Phù hợp khi cần tích hợp vào backend hoặc chạy chẩn đoán hàng loạt thư mục ảnh:
+
+- **Chẩn đoán 1 ảnh:**
+  ```bash
+  python predict.py --image "duong_dan/toi/anh_ct.jpg" --output "ket_qua_chan_doan"
+  ```
+- **Chẩn đoán hàng loạt cả thư mục ảnh:**
+  ```bash
+  python predict.py --dir "thu_muc_chua_anh_ct/" --output "ket_qua_chan_doan"
+  ```
+  Kết quả mặt nạ phổi (`_mask.png`), ảnh phủ màu (`_overlay.png`) và file tổng hợp kết quả (`batch_diagnosis_summary.csv`) sẽ được tự động lưu vào thư mục đầu ra.

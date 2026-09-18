@@ -106,9 +106,12 @@ CAD-Analysis-Dashboard/
 │   ├── Random_Classifier.ipynb       # ML experiments (Random Forest, SMOTE, etc.)
 │   └── UNET Training/                # U-Net segmentation training and weights
 ├── modules/
-│   └── eda.py                        # EDA, statistical analysis & ML pipeline
+│   ├── eda.py                        # EDA, statistical analysis & ML pipeline
+│   └── inference.py                  # End-to-end inference engine for new images
+├── predict.py                        # Standalone CLI tool for single/batch diagnosis
 ├── requirements.txt                  # Dependencies for Dashboard & EDA
 ├── requirements-ml.txt               # Dependencies for DL & Radiomics
+├── ARCHITECTURE.md                   # Complete system architecture specification
 ├── SETUP_GUIDE.md                    # Detailed Vietnamese setup guide
 └── README.md                         # Project overview and documentation
 ```
