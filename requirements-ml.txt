@@ -1,0 +1,16 @@
+# Machine Learning, Deep Learning (U-Net) & Medical Radiomics Feature Extraction
+# NOTE: pyradiomics requires Python <= 3.10 and C++ Build Tools on Windows
+
+-r requirements.txt
+
+# Medical Imaging & Radiomics
+SimpleITK>=2.3.0
+pyradiomics>=3.0.1
+
+# Computer Vision & Deep Learning
+opencv-python>=4.8.0
+tensorflow>=2.8.0,<2.16.0
+
+# Interactive Notebooks
+ipykernel>=6.25.0
+jupyter>=1.0.0

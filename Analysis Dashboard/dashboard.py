@@ -1,20 +1,32 @@
+import sys
+from pathlib import Path
+
+# Add project root and current dir to sys.path for seamless imports
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
+
 import sqlite3
 import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
-from modules.eda import dataset_overview,handle_missing_values, correlation_matrix, top_correlated_features, kpi_and_visualization, remove_outliers_isolation_forest
+from modules.eda import dataset_overview, handle_missing_values, correlation_matrix, top_correlated_features, kpi_and_visualization, remove_outliers_isolation_forest
 from modules.eda import display_textual_outlier_comparison, visualize_top_features_box_plots, log_transform, normalize_data, perform_normality_tests
-from modules.eda import plot_histograms_before_after, plot_qq_before_after_with_plotly,apply_transformations, perform_t_test
+from modules.eda import plot_histograms_before_after, plot_qq_before_after_with_plotly, apply_transformations, perform_t_test
 from modules.eda import perform_pca, plot_pca_2d, pca_analysis, train_and_compare_classification_models, show_textual_report, show_visualizations
 
-# Database connection
-conn = sqlite3.connect('radiomics_data.db')
+# Database connection path
+DB_PATH = CURRENT_DIR / 'radiomics_data.db'
 
-@st.cache_data(ttl=7200)  # Disable caching for debugging
+@st.cache_data(ttl=7200)
 def load_data():
-    query = "SELECT * FROM radiomic_features"
-    return pd.read_sql(query, conn)
+    with sqlite3.connect(DB_PATH) as conn:
+        query = "SELECT * FROM radiomic_features"
+        return pd.read_sql(query, conn)
 
 # Page configuration
 st.set_page_config(page_title="COVID-19 Radiomics Dashboard", layout="wide")

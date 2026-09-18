@@ -2,13 +2,21 @@ import sqlite3
 import pandas as pd
 from sqlalchemy import create_engine
 
-# Connect to SQLite database (or create it if it doesn't exist)
-engine = create_engine('sqlite:///radiomics_data.db')
-conn = sqlite3.connect('radiomics_data.db')
+from pathlib import Path
 
-# Load data
-covid_df = pd.read_csv('E:/Studies/Sem-5/SDP/Analysis Dashboard/extracted_features_Covid.csv')  # Replace with your actual file path
-normal_df = pd.read_csv('E:/Studies/Sem-5/SDP/Analysis Dashboard/extracted_features_normal.csv')  # Replace with your actual file path
+BASE_DIR = Path(__file__).resolve().parent
+db_path = BASE_DIR / 'radiomics_data.db'
+
+# Connect to SQLite database (or create it if it doesn't exist)
+engine = create_engine(f'sqlite:///{db_path}')
+conn = sqlite3.connect(db_path)
+
+# Load data dynamically relative to this script
+covid_csv = BASE_DIR / 'extracted_features_Covid.csv'
+normal_csv = BASE_DIR / 'extracted_features_normal.csv'
+
+covid_df = pd.read_csv(covid_csv)
+normal_df = pd.read_csv(normal_csv)
 
 # Label each dataset
 covid_df['Target'] = 'COVID'
