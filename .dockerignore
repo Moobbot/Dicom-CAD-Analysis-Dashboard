@@ -1,0 +1,10 @@
+# Only what the model service image needs (service/Dockerfile).
+*
+!modules/inference.py
+!Analysis Dashboard/params.yaml
+!Analysis Dashboard/extracted_features_Covid.csv
+!Analysis Dashboard/extracted_features_normal.csv
+!ML/UNET Training/lung_segmentation_unet .h5
+!service
+service/tests
+**/__pycache__

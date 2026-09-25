@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Union, Tuple, Dict, Any, Optional
+from typing import Union, Tuple, Dict, Any, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -83,10 +83,12 @@ def load_segmentation_model():
         return None
 
 
-def segment_lung(image_gray: np.ndarray, model=None) -> np.ndarray:
+def segment_lung(image_gray: np.ndarray, model=None, fallbacks: Optional[List[str]] = None) -> np.ndarray:
     """
     Segment the lung region from a 2D grayscale image.
     Returns a binary mask of shape (H, W) with values in {0, 255}.
+    `fallbacks`, when given, records every fallback taken (the model service reports them
+    instead of returning the heuristic result as if it came from the U-Net).
     """
     orig_h, orig_w = image_gray.shape[:2]
 
@@ -109,6 +111,10 @@ def segment_lung(image_gray: np.ndarray, model=None) -> np.ndarray:
             return np.array(mask_full, dtype=np.uint8)
         except Exception as e:
             logger.warning(f"U-Net inference error: {e}. Falling back to Otsu thresholding.")
+            if fallbacks is not None:
+                fallbacks.append("segmentation_error")
+    elif fallbacks is not None:
+        fallbacks.append("segmentation_unavailable")
 
     # Fallback heuristic segmentation (Otsu threshold + lung morphology)
     norm = ((image_gray - image_gray.min()) / (np.ptp(image_gray) + 1e-6) * 255).astype(np.uint8)
@@ -118,11 +124,16 @@ def segment_lung(image_gray: np.ndarray, model=None) -> np.ndarray:
     return mask
 
 
-def extract_radiomics(image_gray: np.ndarray, mask: np.ndarray) -> Dict[str, float]:
+def extract_radiomics(image_gray: np.ndarray, mask: np.ndarray, fallbacks: Optional[List[str]] = None) -> Dict[str, float]:
     """
     Extract the 24 radiomics features using PyRadiomics.
     Falls back to statistical computation if PyRadiomics is not installed.
+    `fallbacks`, when given, records every fallback taken (see segment_lung).
     """
+    def note(code: str) -> None:
+        if fallbacks is not None:
+            fallbacks.append(code)
+
     params_path = BASE_DIR / "Analysis Dashboard" / "params.yaml"
 
     # 1. Attempt PyRadiomics extraction
@@ -137,6 +148,7 @@ def extract_radiomics(image_gray: np.ndarray, mask: np.ndarray) -> Dict[str, flo
         # Ensure label 255 is present
         if np.max(mask) == 0:
             logger.warning("Mask is empty. Setting center region for radiomics.")
+            note("empty_mask")
             h, w = mask.shape
             mask[h//4: 3*h//4, w//4: 3*w//4] = 255
             sitk_mask = sitk.Cast(sitk.GetImageFromArray(mask), sitk.sitkUInt8)
@@ -144,6 +156,7 @@ def extract_radiomics(image_gray: np.ndarray, mask: np.ndarray) -> Dict[str, flo
         if params_path.is_file():
             extractor = featureextractor.RadiomicsFeatureExtractor(str(params_path))
         else:
+            note("params_missing")
             extractor = featureextractor.RadiomicsFeatureExtractor()
             extractor.settings['label'] = 255
 
@@ -153,13 +166,16 @@ def extract_radiomics(image_gray: np.ndarray, mask: np.ndarray) -> Dict[str, flo
             if col in features_raw:
                 extracted[col] = float(features_raw[col])
             else:
+                note("feature_missing")
                 extracted[col] = 0.0
         return extracted
 
     except ImportError:
         logger.info("PyRadiomics not installed. Using native statistical feature extraction.")
+        note("radiomics_unavailable")
     except Exception as e:
         logger.warning(f"PyRadiomics extraction failed ({e}). Falling back to statistical extraction.")
+        note("radiomics_error")
 
     # 2. Native statistical fallback
     masked_pixels = image_gray[mask > 0].astype(np.float64)
@@ -223,10 +239,6 @@ def get_or_train_classifier():
     classifier_path = models_dir / "cad_classifier.joblib"
 
     import joblib
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.impute import SimpleImputer
-    from sklearn.pipeline import Pipeline
 
     if classifier_path.is_file():
         try:
@@ -237,6 +249,16 @@ def get_or_train_classifier():
             logger.warning(f"Failed to load cached classifier ({e}). Retraining...")
 
     logger.info("Training new Random Forest classifier from radiomics datasets...")
+    pipeline = train_classifier()
+    joblib.dump(pipeline, classifier_path)
+    logger.info(f"Classifier saved successfully to {classifier_path}")
+
+    _CLASSIFIER_PIPELINE = pipeline
+    return _CLASSIFIER_PIPELINE
+
+
+def training_features() -> Tuple[pd.DataFrame, pd.Series]:
+    """The feature table (24 columns) and labels (1 = COVID-19) the classifier is trained on."""
     covid_csv = BASE_DIR / "Analysis Dashboard" / "extracted_features_Covid.csv"
     normal_csv = BASE_DIR / "Analysis Dashboard" / "extracted_features_normal.csv"
 
@@ -252,19 +274,25 @@ def get_or_train_classifier():
 
     X = full_df[FEATURE_COLUMNS].apply(pd.to_numeric, errors='coerce')
     y = full_df['Target'].astype(int)
+    return X, y
 
+
+def train_classifier():
+    """Fit the Random Forest pipeline on the feature CSVs (deterministic: random_state=42).
+    Writes nothing to disk — the model service trains it in memory at every start."""
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.impute import SimpleImputer
+    from sklearn.pipeline import Pipeline
+
+    X, y = training_features()
     pipeline = Pipeline([
         ('imputer', SimpleImputer(strategy='median')),
         ('scaler', StandardScaler()),
         ('classifier', RandomForestClassifier(n_estimators=200, max_depth=15, class_weight='balanced', random_state=42))
     ])
-
     pipeline.fit(X, y)
-    joblib.dump(pipeline, classifier_path)
-    logger.info(f"Classifier saved successfully to {classifier_path}")
-
-    _CLASSIFIER_PIPELINE = pipeline
-    return _CLASSIFIER_PIPELINE
+    return pipeline
 
 
 def create_overlay(image_gray: np.ndarray, mask: np.ndarray, alpha: float = 0.35) -> np.ndarray:
@@ -476,11 +504,12 @@ def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray, Any], 
     else:
         raise ValueError("Unsupported image input type.")
 
-    # 2. Lung Segmentation
-    mask = segment_lung(img_gray)
+    # 2. Lung Segmentation (fallbacks taken are recorded and returned, see segment_lung)
+    fallbacks: List[str] = []
+    mask = segment_lung(img_gray, fallbacks=fallbacks)
 
     # 3. Radiomic Feature Extraction
-    features_dict = extract_radiomics(img_gray, mask)
+    features_dict = extract_radiomics(img_gray, mask, fallbacks=fallbacks)
 
     # 4. Classification
     clf = get_or_train_classifier()
@@ -507,5 +536,6 @@ def diagnose_image(image_input: Union[str, Path, Image.Image, np.ndarray, Any], 
         "image_gray": img_gray,
         "mask": mask,
         "overlay": overlay,
-        "dicom_metadata": dicom_meta
+        "dicom_metadata": dicom_meta,
+        "fallbacks": fallbacks
     }
