@@ -28,6 +28,28 @@ pytest.importorskip("radiomics")
 CASE = os.environ.get("CAD_PARITY_CASE_DIR")
 
 
+def test_radiomics_stays_quiet_after_its_first_use(monkeypatch, caplog):
+    # `import radiomics` sets its logger back to INFO; the first case imports it lazily
+    # (modules/inference.py), after the service had set WARNING: ~3000 INFO lines per case.
+    import logging
+
+    # The service logs at INFO (modules/inference.py: basicConfig); pytest's own handlers make that
+    # basicConfig a no-op here, so set the root level as the service has it (restored after the test).
+    caplog.set_level(logging.INFO)
+    from service import app
+
+    # As in a fresh service process: radiomics not imported yet (importorskip above imported it;
+    # monkeypatch puts the modules back afterwards).
+    for name in [n for n in sys.modules if n == "radiomics" or n.startswith("radiomics.")]:
+        monkeypatch.delitem(sys.modules, name)
+    app._quiet_logs()  # what the service does at start (_load)
+    from radiomics import featureextractor  # noqa: F401  (the lazy import of the first case)
+
+    assert logging.getLogger("radiomics").getEffectiveLevel() >= logging.WARNING
+    # pykwalify validates the feature settings once per slice: "validation.valid" at INFO.
+    assert logging.getLogger("pykwalify.core").getEffectiveLevel() >= logging.WARNING
+
+
 def test_classifier_training_is_deterministic():
     import numpy as np
 

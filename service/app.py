@@ -38,6 +38,16 @@ log = logging.getLogger("cad-service")
 STATE = {"loaded": False, "reason": "the model is starting", "info": None}
 
 
+def _quiet_logs() -> None:
+    """No per-slice chatter (~3000 INFO lines per case otherwise). `import radiomics` sets its
+    logger back to INFO, and the model imports it lazily on the first case: import it first.
+    pykwalify (PyRadiomics' settings check) logs "validation.valid" once per slice."""
+    import radiomics  # noqa: F401
+
+    for name in ("CADInference", "radiomics", "pykwalify"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def _load() -> dict:
     import numpy as np
     import tensorflow as tf
@@ -48,8 +58,6 @@ def _load() -> dict:
 
     from modules import inference
 
-    logging.getLogger("CADInference").setLevel(logging.WARNING)  # no per-slice chatter
-    logging.getLogger("radiomics").setLevel(logging.WARNING)  # ~3000 INFO lines per case otherwise
     params = REPO / "Analysis Dashboard" / "params.yaml"
     if not params.is_file():
         raise RuntimeError("the feature settings (Analysis Dashboard/params.yaml) are missing")
@@ -58,6 +66,7 @@ def _load() -> dict:
         import radiomics  # noqa: F401
     except ImportError as e:
         raise RuntimeError(f"a feature library is missing ({e.name})") from e
+    _quiet_logs()  # after the check above: a missing library is reported as such on /health
 
     unet = inference.get_unet_model_path()
     if not unet.is_file():
