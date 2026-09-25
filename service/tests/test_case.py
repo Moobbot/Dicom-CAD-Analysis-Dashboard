@@ -12,7 +12,7 @@ from service import case as C  # noqa: E402
 
 
 def header(z, inst=None, series="1.2.3", modality="CT", frames=None):
-    return SimpleNamespace(ImagePositionPatient=[0, 0, z], InstanceNumber=inst, SeriesInstanceUID=series, Modality=modality, NumberOfFrames=frames)
+    return SimpleNamespace(ImagePositionPatient=[0, 0, z], InstanceNumber=inst, SeriesInstanceUID=series, Modality=modality, NumberOfFrames=frames, Rows=512)
 
 
 def make_case(tmp_path, headers):
@@ -33,8 +33,9 @@ def _read(h):
 
 def test_slices_in_z_order_recognised_by_content_not_suffix(tmp_path):
     read = make_case(tmp_path, {"img_00001.dcm": header(3.0), "IMG_00002.DCM": header(1.0), "img_00003": header(2.0), "README": None, ".hidden": header(9.0)})
-    got = [os.path.basename(s.path) for s in C.discover_slices(str(tmp_path), read)]
-    assert got == ["IMG_00002.DCM", "img_00003", "img_00001.dcm"]
+    found = C.discover_slices(str(tmp_path), read)
+    assert [os.path.basename(s.path) for s in found.slices] == ["IMG_00002.DCM", "img_00003", "img_00001.dcm"]
+    assert found.unreadable == 0
 
 
 @pytest.mark.parametrize(
@@ -45,7 +46,7 @@ def test_slices_in_z_order_recognised_by_content_not_suffix(tmp_path):
         ({"a.dcm": header(1.0, series="1"), "b.dcm": header(2.0, series="2")}, "2 DICOM series"),
         ({"a.dcm": header(1.0, 4), "b.dcm": header(1.0, 4)}, "duplicate"),
         ({"README": None}, "No DICOM image"),
-        ({"a.dcm": SimpleNamespace(ImagePositionPatient=None, Modality="CT")}, "cannot be ordered"),
+        ({"a.dcm": SimpleNamespace(ImagePositionPatient=None, Modality="CT", Rows=512)}, "cannot be ordered"),
     ],
 )
 def test_ambiguous_or_unsupported_cases_are_refused_with_a_reason(tmp_path, headers, message):
@@ -57,7 +58,20 @@ def test_ambiguous_or_unsupported_cases_are_refused_with_a_reason(tmp_path, head
 
 def test_same_z_ordered_by_instance_number(tmp_path):
     read = make_case(tmp_path, {"b.dcm": header(1.0, 2), "a.dcm": header(1.0, 1), "c.dcm": header(1.0, "x")})
-    assert [os.path.basename(s.path) for s in C.discover_slices(str(tmp_path), read)] == ["a.dcm", "b.dcm", "c.dcm"]
+    assert [os.path.basename(s.path) for s in C.discover_slices(str(tmp_path), read).slices] == ["a.dcm", "b.dcm", "c.dcm"]
+
+
+def test_review_m3_non_image_dicom_objects_are_skipped_not_fatal(tmp_path):
+    dicomdir = SimpleNamespace(SOPClassUID="1.2.840.10008.1.3.10", Modality="", Rows=None)
+    report = SimpleNamespace(Modality="SR", Rows=None)
+    read = make_case(tmp_path, {"DICOMDIR": dicomdir, "img_00009": report, "img_00001.dcm": header(1.0)})
+    assert [os.path.basename(s.path) for s in C.discover_slices(str(tmp_path), read).slices] == ["img_00001.dcm"]
+
+
+def test_review_l5_an_unreadable_dcm_file_counts_as_a_slice_not_analysed(tmp_path):
+    read = make_case(tmp_path, {"img_00001.dcm": header(1.0), "img_00002.dcm": None, "README": None})
+    found = C.discover_slices(str(tmp_path), read)
+    assert found.unreadable == 1  # the .dcm file; README is simply not DICOM
 
 
 # ---------------------------------------------------------------- slices -> case
@@ -95,8 +109,8 @@ def test_regression_review_x3_partial_coverage_never_concludes_normal():
     assert C.summarize(outcomes + [C.slice_outcome(result(0.8))]).label == "COVID-19"
 
 
-def test_no_analysable_slice_is_an_error_not_a_result():
-    with pytest.raises(C.CaseError) as e:
+def test_no_analysable_slice_is_an_error_not_a_result_and_says_why():
+    with pytest.raises(C.CaseError, match=r"feature extraction failed \(1\)") as e:
         C.summarize([C.slice_outcome(result(0.9, ["radiomics_error"]))])
     assert e.value.status == 422
 
@@ -149,11 +163,19 @@ def test_heartbeat_is_refreshed_while_running_and_removed_after(tmp_path):
     assert not os.path.exists(os.path.join(tmp_path, ".heartbeat"))
 
 
-@pytest.mark.parametrize("sid,ok", [("3f2b8c1e-4a5d-4e6f-8a9b-0c1d2e3f4a5b", True), ("../etc", False), ("3F2B8C1E-4A5D-4E6F-8A9B-0C1D2E3F4A5B", False)])
+@pytest.mark.parametrize(
+    "sid,ok",
+    [
+        ("3f2b8c1e-4a5d-4e6f-8a9b-0c1d2e3f4a5b", True),
+        ("3f2b8c1e-4a5d-4e6f-8a9b-0c1d2e3f4a5b\n", False),  # review L3: `$` accepted this
+        ("../etc", False),
+        ("3F2B8C1E-4A5D-4E6F-8A9B-0C1D2E3F4A5B", False),
+    ],
+)
 def test_session_id_validation(sid, ok):
-    assert bool(C.SESSION_ID.match(sid)) is ok
+    assert bool(C.SESSION_ID.fullmatch(sid)) is ok
 
 
-@pytest.mark.parametrize("out,ok", [("cad", True), ("cad_covid", True), ("../sybil", False), ("Cad", False), ("", False)])
+@pytest.mark.parametrize("out,ok", [("cad", True), ("cad_covid", True), ("cad\n", False), ("../sybil", False), ("Cad", False), ("", False)])
 def test_output_dir_validation(out, ok):
-    assert bool(C.OUTPUT_DIR.match(out)) is ok
+    assert bool(C.OUTPUT_DIR.fullmatch(out)) is ok

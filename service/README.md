@@ -17,8 +17,10 @@ An HTTP wrapper around `modules/inference.py` for the hospital diagnosis app
 | `GET /info` | `{model: "cad", loaded, version, weights, result_contract: 1, research_model: true, ...}` |
 | `POST /api_predict` | body `{session_id, output_dir}`; reads `UPLOAD_FOLDER/<session_id>/`, writes `RESULTS_FOLDER/<session_id>/<output_dir>/` |
 
-One case at a time (`service/inference_gate.py`, shared with the Sybil and CVD services); a case
-running longer than `INFERENCE_MAX_SECONDS` (30 min) makes the process exit so Docker restarts it.
+One case at a time in this service (`service/inference_gate.py`, the same code as the Sybil and CVD
+services — each service has its own lock; the app's "one model at a time" mode is what keeps the
+three from running together). A case running longer than `INFERENCE_MAX_SECONDS` (30 min) makes the
+process exit so Docker restarts it.
 
 ## What a case returns
 
@@ -39,7 +41,14 @@ vote share, **not a calibrated probability**), `covid_slices` and `analysed_slic
 (measurements, in slices). Artifact: `results.gif` (lung mask overlay, ≤ 60 frames).
 
 Refused cases (400): no DICOM image, a non-CT modality, a multi-frame file, several series, two
-slices at the same position. No slice analysable → 422.
+slices with the same position and the same instance number. Skipped: non-DICOM files and DICOM
+objects that are not images (DICOMDIR, reports). A `.dcm` file that cannot be read counts as a slice
+not analysed. No slice analysable → 422, with the reasons.
+
+Measured on the project's 291-slice reference CT: the U-Net returns an **empty lung mask on 76
+slices, many of them in the middle of the lungs** (not only above and below them), so those slices
+are not analysed and a case without a positive slice is "Indeterminate". This is the model's
+behaviour on hospital CT, not a wrapper choice — one more reason it is a research model.
 
 ## Version
 

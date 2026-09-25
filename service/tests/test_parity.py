@@ -1,7 +1,10 @@
 """Parity and determinism of the served model — run inside the service image.
 
-    docker run --rm -v <case dir>:/case:ro -e CAD_PARITY_CASE_DIR=/case cad-service \
-        sh -c "pip install -q pytest && python -m pytest service/tests/test_parity.py"
+    docker run --rm -v <case dir>:/case:ro -v "$PWD/service/tests:/app/service/tests:ro" \
+        -e CAD_PARITY_CASE_DIR=/case cad-service \
+        sh -c "pip install -q pytest && python -m pytest service/tests"
+
+(the image does not contain the tests: .dockerignore leaves them out)
 
 - the classifier trained twice gives identical predictions (it is re-trained at every start);
 - the service's case result equals a direct loop of `modules.inference.diagnose_image` over the
@@ -53,8 +56,8 @@ def test_service_result_equals_a_direct_diagnose_image_loop(tmp_path, monkeypatc
 
     body = service_app.predict_case(sid, "cad")
 
-    slices = C.discover_slices(str(uploads / sid), lambda p: pydicom.dcmread(p, stop_before_pixels=True))
-    direct = [C.slice_outcome(inference.diagnose_image(s.path, filename="x.dcm")) for s in slices]
+    found = C.discover_slices(str(uploads / sid), lambda p: pydicom.dcmread(p, stop_before_pixels=True))
+    direct = [C.slice_outcome(inference.diagnose_image(s.path, filename="x.dcm")) for s in found.slices]
     expected = C.summarize(direct)
     values = {r["key"]: r["value"] for r in body["results"]}
     assert values["predicted_class"] == expected.label

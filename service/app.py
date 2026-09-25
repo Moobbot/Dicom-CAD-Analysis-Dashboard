@@ -49,6 +49,7 @@ def _load() -> dict:
     from modules import inference
 
     logging.getLogger("CADInference").setLevel(logging.WARNING)  # no per-slice chatter
+    logging.getLogger("radiomics").setLevel(logging.WARNING)  # ~3000 INFO lines per case otherwise
     params = REPO / "Analysis Dashboard" / "params.yaml"
     if not params.is_file():
         raise RuntimeError("the feature settings (Analysis Dashboard/params.yaml) are missing")
@@ -66,6 +67,16 @@ def _load() -> dict:
             raise RuntimeError("the U-Net weights are not an HDF5 file (a Git LFS pointer? run `git lfs pull`)")
     if inference.load_segmentation_model() is None:
         raise RuntimeError("the U-Net could not be loaded")
+    # Feature extraction must really work (an import succeeding is not enough): one synthetic
+    # slice with a clear region, no fallback allowed.
+    probe = np.zeros((128, 128), dtype=np.uint8)
+    probe[32:96, 32:96] = np.arange(64, dtype=np.uint8)[None, :] + 100
+    mask = np.zeros_like(probe)
+    mask[32:96, 32:96] = 255
+    taken = []
+    inference.extract_radiomics(probe, mask, fallbacks=taken)
+    if taken:
+        raise RuntimeError(f"feature extraction does not work ({', '.join(taken)})")
 
     pipeline = inference.train_classifier()
     inference._CLASSIFIER_PIPELINE = pipeline  # diagnose_image uses it; nothing cached on disk
@@ -122,12 +133,15 @@ def predict_case(session_id: str, output_dir: str) -> dict:
     outdir = os.path.join(RESULTS, session_id, output_dir)
     os.makedirs(outdir, exist_ok=True)  # created at once: the app sees the case as active
     with C.Heartbeat(outdir):
-        slices = C.discover_slices(
+        found = C.discover_slices(
             os.path.join(UPLOADS, session_id),
             lambda p: pydicom.dcmread(p, stop_before_pixels=True),
         )
+        slices = found.slices
         frame_at = set(C.gif_frame_indices(len(slices)))
-        outcomes, overlays, labels = [], [], []
+        # Unreadable .dcm files count as slices that could not be analysed.
+        outcomes = [C.slice_outcome(None) for _ in range(found.unreadable)]
+        overlays, labels = [], []
         for i, s in enumerate(slices):
             try:
                 # A neutral name: diagnose_image logs it and returns it.
@@ -138,8 +152,11 @@ def predict_case(session_id: str, output_dir: str) -> dict:
             outcome = C.slice_outcome(r)
             outcomes.append(outcome)
             if i in frame_at and r is not None:
-                overlays.append(r["overlay"])
-                labels.append(f"slice {i + 1}/{len(slices)}" + ("" if outcome.covid_probability is not None else " (not analysed)"))
+                analysed = outcome.covid_probability is not None
+                # A slice left out is drawn WITHOUT its mask: for an empty mask, the model code
+                # substitutes a centre rectangle, which is not a lung segmentation.
+                overlays.append(r["overlay"] if analysed else inference.create_overlay(r["image_gray"], r["image_gray"] * 0))
+                labels.append(f"slice {i + 1}/{len(slices)}" + ("" if analysed else " (not analysed)"))
         summary = C.summarize(outcomes)
         gif = None
         if overlays:
@@ -156,9 +173,9 @@ async def api_predict(request: Request):
         return JSONResponse({"error": "The body must be JSON"}, status_code=400)
     session_id = body.get("session_id") if isinstance(body, dict) else None
     output_dir = body.get("output_dir", "cad") if isinstance(body, dict) else None
-    if not isinstance(session_id, str) or not C.SESSION_ID.match(session_id):
+    if not isinstance(session_id, str) or not C.SESSION_ID.fullmatch(session_id):
         return JSONResponse({"error": "Invalid session_id"}, status_code=400)
-    if not isinstance(output_dir, str) or not C.OUTPUT_DIR.match(output_dir):
+    if not isinstance(output_dir, str) or not C.OUTPUT_DIR.fullmatch(output_dir):
         return JSONResponse({"error": "Invalid output_dir"}, status_code=400)
     if not STATE["loaded"]:
         return JSONResponse({"error": f"The CAD model is not loaded: {STATE['reason']}"}, status_code=503)

@@ -28,5 +28,6 @@ COPY ["ML/UNET Training/lung_segmentation_unet .h5", "ML/UNET Training/"]
 COPY service service
 EXPOSE 5557
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5557/health', timeout=4).status == 200 else 1)"
-CMD ["sh", "-c", "uvicorn service.app:app --host 0.0.0.0 --port ${PORT} --workers 1"]
+  CMD python -c "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('PORT', '5557'), timeout=4).status == 200 else 1)"
+# exec: uvicorn becomes PID 1 and receives SIGTERM (docker stop), instead of being killed after 10 s.
+CMD ["sh", "-c", "exec uvicorn service.app:app --host 0.0.0.0 --port ${PORT} --workers 1"]

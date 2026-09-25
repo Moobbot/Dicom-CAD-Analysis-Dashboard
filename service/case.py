@@ -19,8 +19,12 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence
 
-SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-OUTPUT_DIR = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+# Use with .fullmatch(): `$` would also accept a trailing newline.
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+OUTPUT_DIR = re.compile(r"[a-z][a-z0-9_]{0,31}")
+# DICOM objects that are not images: skipped, like non-DICOM files.
+NON_IMAGE_SOP_CLASSES = {"1.2.840.10008.1.3.10"}  # Media Storage Directory (DICOMDIR)
+NON_IMAGE_MODALITIES = {"SR", "KO", "PR", "REG", "SEG", "RTSTRUCT", "DOC"}
 MAX_GIF_FRAMES = 60
 HEARTBEAT_SECONDS = 30
 
@@ -45,6 +49,12 @@ class Slice:
     instance: Optional[int]
 
 
+@dataclass
+class CaseSlices:
+    slices: List[Slice]
+    unreadable: int = 0  # .dcm files whose header could not be read (counted as not analysed)
+
+
 def _int_or_none(value) -> Optional[int]:
     try:
         return int(value) if value not in (None, "") else None
@@ -52,16 +62,25 @@ def _int_or_none(value) -> Optional[int]:
         return None
 
 
-def discover_slices(upload_dir: str, read_header: Callable[[str], object]) -> List[Slice]:
+def _is_image(h) -> bool:
+    sop = str(getattr(h, "SOPClassUID", "") or getattr(getattr(h, "file_meta", None), "MediaStorageSOPClassUID", "") or "")
+    modality = str(getattr(h, "Modality", "") or "")
+    return sop not in NON_IMAGE_SOP_CLASSES and modality not in NON_IMAGE_MODALITIES and getattr(h, "Rows", None) is not None
+
+
+def discover_slices(upload_dir: str, read_header: Callable[[str], object]) -> CaseSlices:
     """The CT slices of the case in z order.
 
     Files are recognised by CONTENT (`read_header` raises on a non-DICOM file), not by suffix:
     the app keeps `.dcm` names but an upload may hold `.DCM` or extensionless DICOM files.
-    Refused, with the reason: no DICOM, a non-CT modality, a multi-frame file, several series,
-    two slices at the same position and number.
+    Skipped: files that are not DICOM and DICOM objects that are not images (DICOMDIR, reports).
+    A `.dcm` file that cannot be read is counted as a slice that could not be analysed — it may be
+    part of the lungs. Refused, with the reason: no image, a non-CT modality, a multi-frame file,
+    several series, two slices at the same position and number.
     """
     names = sorted(n for n in os.listdir(upload_dir) if not n.startswith("."))
     slices: List[Slice] = []
+    unreadable = 0
     series = set()
     for name in names:
         path = os.path.join(upload_dir, name)
@@ -70,7 +89,11 @@ def discover_slices(upload_dir: str, read_header: Callable[[str], object]) -> Li
         try:
             h = read_header(path)
         except Exception:
-            continue  # not DICOM (README, DICOMDIR residue...)
+            if name.lower().endswith(".dcm"):
+                unreadable += 1
+            continue  # not DICOM (README, residue...)
+        if not _is_image(h):
+            continue
         modality = str(getattr(h, "Modality", "") or "")
         if modality and modality != "CT":
             raise CaseError(f"The case holds {modality} images; this model reads CT only.")
@@ -92,7 +115,7 @@ def discover_slices(upload_dir: str, read_header: Callable[[str], object]) -> Li
     for a, b in zip(ordered, ordered[1:]):
         if a.z == b.z and a.instance == b.instance:
             raise CaseError("Two slices have the same position and number (duplicate files?).")
-    return ordered
+    return CaseSlices(ordered, unreadable)
 
 
 # ---------------------------------------------------------------- aggregation
@@ -144,12 +167,13 @@ def summarize(outcomes: Sequence[SliceOutcome], threshold: float = 0.5) -> CaseS
     """The case result. A slice counts as COVID-19 when its COVID-19 probability wins (> 0.5),
     as `diagnose_image` labels it (argmax of the two classes)."""
     analysed = [o.covid_probability for o in outcomes if o.covid_probability is not None]
-    if not analysed:
-        raise CaseError("No slice could be analysed without a fallback; the case has no result.", 422)
     left_out: Dict[str, int] = {}
     for o in outcomes:
         for r in o.reasons:
             left_out[r] = left_out.get(r, 0) + 1
+    if not analysed:
+        why = "; ".join(f"{FALLBACK_TEXT.get(k, k)} ({n})" for k, n in sorted(left_out.items()))
+        raise CaseError(f"No slice could be analysed without a fallback: {why}."[:300], 422)
     covid = sum(1 for p in analysed if p > threshold)
     if covid > 0:
         label = "COVID-19"
