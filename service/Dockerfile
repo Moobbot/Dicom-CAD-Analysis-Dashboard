@@ -24,7 +24,8 @@ RUN --mount=type=bind,from=build,source=/wheels,target=/wheels \
 WORKDIR /app
 COPY modules/inference.py modules/inference.py
 COPY ["Analysis Dashboard/params.yaml", "Analysis Dashboard/extracted_features_Covid.csv", "Analysis Dashboard/extracted_features_normal.csv", "Analysis Dashboard/"]
-COPY ["ML/UNET Training/lung_segmentation_unet .h5", "ML/UNET Training/"]
+# U-Net weights (~372 MB) are mounted from host at runtime or auto-downloaded if missing
+RUN mkdir -p "ML/UNET Training"
 COPY service service
 EXPOSE 5557
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \

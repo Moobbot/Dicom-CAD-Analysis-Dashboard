@@ -48,6 +48,70 @@ def _quiet_logs() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+CAD_WEIGHTS_URLS = {
+    "lung_segmentation_unet.h5": "https://github.com/Moobbot/Dicom-CAD-Analysis-Dashboard/releases/download/v-0.1/lung_segmentation_unet.h5",
+    "predictions.npy": "https://github.com/Moobbot/Dicom-CAD-Analysis-Dashboard/releases/download/v-0.1/predictions.npy",
+}
+
+
+def _download_file(url: str, dest_path: Path) -> None:
+    import urllib.request
+    import shutil
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest_path.with_suffix(dest_path.suffix + ".downloading")
+    log.info("Downloading %s from %s...", dest_path.name, url)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req) as resp, open(tmp_path, "wb") as f_out:
+            shutil.copyfileobj(resp, f_out)
+        tmp_path.replace(dest_path)
+        log.info("Successfully downloaded %s", dest_path.name)
+    except Exception as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise RuntimeError(f"Failed to download {dest_path.name} from {url}: {e}") from e
+
+
+def _ensure_weights() -> None:
+    """Ensure U-Net weights and predictions are present and valid, auto-download from GitHub release if missing or Git LFS pointer."""
+    target_dir = REPO / "ML" / "UNET Training"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Check U-Net weights
+    unet_path = target_dir / "lung_segmentation_unet.h5"
+    unet_space_path = target_dir / "lung_segmentation_unet .h5"
+
+    is_valid_unet = False
+    for candidate in (unet_path, unet_space_path):
+        if candidate.is_file():
+            try:
+                with open(candidate, "rb") as f:
+                    if f.read(8) == HDF5_SIGNATURE:
+                        is_valid_unet = True
+                        break
+            except Exception:
+                pass
+
+    if not is_valid_unet:
+        log.warning("U-Net weights missing or not a valid HDF5 file (Git LFS pointer?). Downloading from GitHub release...")
+        _download_file(CAD_WEIGHTS_URLS["lung_segmentation_unet.h5"], unet_path)
+        # If the space version was an invalid pointer, remove it so inference picks the valid file
+        if unet_space_path.is_file():
+            try:
+                with open(unet_space_path, "rb") as f:
+                    if f.read(8) != HDF5_SIGNATURE:
+                        unet_space_path.unlink()
+            except Exception:
+                pass
+
+    # 2. Check predictions.npy
+    pred_path = target_dir / "predictions.npy"
+    if not pred_path.is_file() or pred_path.stat().st_size < 1000:
+        log.warning("predictions.npy missing or invalid. Downloading from GitHub release...")
+        _download_file(CAD_WEIGHTS_URLS["predictions.npy"], pred_path)
+
+
 def _load() -> dict:
     import numpy as np
     import tensorflow as tf
@@ -67,6 +131,12 @@ def _load() -> dict:
     except ImportError as e:
         raise RuntimeError(f"a feature library is missing ({e.name})") from e
     _quiet_logs()  # after the check above: a missing library is reported as such on /health
+
+    # Auto-download weights if missing or Git LFS pointer
+    try:
+        _ensure_weights()
+    except Exception as e:
+        log.warning("Auto-downloading CAD weights failed: %s", e)
 
     unet = inference.get_unet_model_path()
     if not unet.is_file():
