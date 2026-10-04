@@ -49,17 +49,34 @@ _UNET_MODEL = None
 _CLASSIFIER_PIPELINE = None
 
 
+HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
+
+
+def _is_hdf5(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(len(HDF5_SIGNATURE)) == HDF5_SIGNATURE
+    except OSError:
+        return False
+
+
 def get_unet_model_path() -> Path:
-    """Find the pre-trained U-Net weights file in ML/UNET Training/."""
+    """Find the pre-trained U-Net weights file in ML/UNET Training/.
+
+    The first candidate that is a real HDF5 file: a Git LFS pointer under one name (a checkout
+    without git-lfs) must not hide the real file under another. When none is a real file, the
+    first one that exists is returned, so that the caller can say what is wrong with it.
+    """
     candidates = [
         BASE_DIR / "ML" / "UNET Training" / "lung_segmentation_unet .h5",
         BASE_DIR / "ML" / "UNET Training" / "lung_segmentation_unet.h5",
         BASE_DIR / "lung_segmentation_unet.h5"
     ]
-    for p in candidates:
-        if p.is_file():
+    existing = [p for p in candidates if p.is_file()]
+    for p in existing:
+        if _is_hdf5(p):
             return p
-    return candidates[0]
+    return existing[0] if existing else candidates[0]
 
 
 def load_segmentation_model():

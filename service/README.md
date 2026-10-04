@@ -57,18 +57,58 @@ behaviour on hospital CT, not a wrapper choice — one more reason it is a resea
 classifier's predictions on its whole training set (it is re-trained in memory at every start,
 with `random_state=42`, so a change of library version shows up as a different fingerprint).
 
+The `w.` part covers the name of each file as well as its content. The U-Net downloaded by the
+service (`lung_segmentation_unet.h5`) therefore gives another `w.` than the same file from Git LFS
+(`lung_segmentation_unet .h5`): measured `w.2d0ba4955fd8` and `w.09a63383b647`. `/info` lists the
+SHA-256 of each file, which is the same in both cases.
+
 ## Build and run
 
 ```sh
 git lfs pull                                   # the U-Net weights (373 MB)
 docker build -f service/Dockerfile -t cad-service .
-docker run --rm -p 5557:5557 -v <uploads>:/app/uploads -v <results>:/app/results cad-service
+docker run --rm -p 5557:5557 -v "$PWD/ML/UNET Training:/app/ML/UNET Training" \
+  -v <uploads>:/app/uploads -v <results>:/app/results cad-service
 ```
 
+The image does not contain the weights: the service reads them from the folder mounted at
+`/app/ML/UNET Training`.
+
 CPU only in this release (`tensorflow-cpu`): TensorFlow would otherwise take most of the GPU
-memory the Sybil and CVD services share. In the diagnosis app the service is started through
-the `cad` compose profile — see its `SETUPDOCKER.md`.
+memory the Sybil and CVD services share. In the diagnosis app the service is built and started
+with the other services (no compose profile); the model stays disabled and hidden until an
+administrator enables it — see the app's `SETUPDOCKER.md`.
+
+## Weights
+
+`service/weights.py`, at every start:
+
+- A real HDF5 file under `lung_segmentation_unet .h5` (the name in git, with a space) or
+  `lung_segmentation_unet.h5` is used as it is. The model takes the first of the two names that
+  holds a real HDF5 file, so a Git LFS pointer under the first name does not hide a real file
+  under the second. When that file is not the one the service was validated with (another U-Net,
+  or a copy that was cut short), the log says `present but NOT the validated file`; if it cannot
+  be loaded, `/health` names it and says to move it away.
+- Otherwise (no file, or only a Git LFS pointer because the checkout was made without git-lfs)
+  the U-Net is downloaded from this repository's release `v-0.1` to `lung_segmentation_unet.h5`
+  and installed **only if its SHA-256 is the expected one**. The address needs `github.com` and
+  `release-assets.githubusercontent.com`.
+- **Nothing in the folder is ever replaced or removed**: not the pointer (the checkout stays
+  clean; the downloaded name is in `.gitignore`), not a file under the download's name, not a
+  file that appears while the download runs. The one exception is the service's own temporary
+  file of a download that was killed (`lung_segmentation_unet.h5.<8 characters>.partial`),
+  removed at the next start.
+- The download runs before the service starts answering: on a slow connection the container
+  shows `unhealthy` until it has finished (the log says `downloading`). Wait; a restart starts
+  the download again.
+- When the file cannot be provided, `/health` answers 503 with the reason and the log says what
+  to do (`git lfs pull`, or copy the file into the folder, then restart).
+
+The log has one line per start, for example
+`Weights: lung_segmentation_unet.h5 present; predictions.npy present.`
 
 ## Tests
 
-`python -m pytest service/tests` — the case layer (`service/case.py`), no TensorFlow needed.
+`python -m pytest service/tests` — the case layer (`service/case.py`), the weights
+(`service/weights.py`) and the choice of the U-Net file: no TensorFlow needed. The parity test
+(`test_parity.py`) needs the image's libraries and a case: see its docstring.

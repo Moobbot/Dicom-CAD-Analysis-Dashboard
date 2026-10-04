@@ -12,8 +12,10 @@ The diagnosis app keeps it disabled until the operator enables it.
 
 Strict start (no silent fallback): the U-Net weights must be a real HDF5 file (not a Git LFS
 pointer), TensorFlow, SimpleITK, PyRadiomics and the feature settings must be present — otherwise
-/health says why and every case is refused. The classifier is trained in memory at every start
-(deterministic, a few seconds) and identified by a fingerprint of its predictions.
+/health says why and every case is refused. A missing U-Net is downloaded from the repository's
+release and verified first; nothing in the weights folder is ever replaced (service/weights.py).
+The classifier is trained in memory at every start (deterministic, a few seconds) and identified
+by a fingerprint of its predictions.
 """
 import hashlib
 import logging
@@ -28,11 +30,11 @@ from fastapi.responses import JSONResponse
 from service import case as C
 from service.inference_gate import serialized, start_watchdog, status as gate_status
 from service.model_info import build_info, source_digest
+from service.weights import HDF5_SIGNATURE, ensure_weights, summary as weights_summary
 
 REPO = Path(__file__).resolve().parent.parent
 UPLOADS = os.environ.get("UPLOAD_FOLDER", "/app/uploads")
 RESULTS = os.environ.get("RESULTS_FOLDER", "/app/results")
-HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 
 log = logging.getLogger("cad-service")
 STATE = {"loaded": False, "reason": "the model is starting", "info": None}
@@ -46,70 +48,6 @@ def _quiet_logs() -> None:
 
     for name in ("CADInference", "radiomics", "pykwalify"):
         logging.getLogger(name).setLevel(logging.WARNING)
-
-
-CAD_WEIGHTS_URLS = {
-    "lung_segmentation_unet.h5": "https://github.com/Moobbot/Dicom-CAD-Analysis-Dashboard/releases/download/v-0.1/lung_segmentation_unet.h5",
-    "predictions.npy": "https://github.com/Moobbot/Dicom-CAD-Analysis-Dashboard/releases/download/v-0.1/predictions.npy",
-}
-
-
-def _download_file(url: str, dest_path: Path) -> None:
-    import urllib.request
-    import shutil
-
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dest_path.with_suffix(dest_path.suffix + ".downloading")
-    log.info("Downloading %s from %s...", dest_path.name, url)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req) as resp, open(tmp_path, "wb") as f_out:
-            shutil.copyfileobj(resp, f_out)
-        tmp_path.replace(dest_path)
-        log.info("Successfully downloaded %s", dest_path.name)
-    except Exception as e:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise RuntimeError(f"Failed to download {dest_path.name} from {url}: {e}") from e
-
-
-def _ensure_weights() -> None:
-    """Ensure U-Net weights and predictions are present and valid, auto-download from GitHub release if missing or Git LFS pointer."""
-    target_dir = REPO / "ML" / "UNET Training"
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. Check U-Net weights
-    unet_path = target_dir / "lung_segmentation_unet.h5"
-    unet_space_path = target_dir / "lung_segmentation_unet .h5"
-
-    is_valid_unet = False
-    for candidate in (unet_path, unet_space_path):
-        if candidate.is_file():
-            try:
-                with open(candidate, "rb") as f:
-                    if f.read(8) == HDF5_SIGNATURE:
-                        is_valid_unet = True
-                        break
-            except Exception:
-                pass
-
-    if not is_valid_unet:
-        log.warning("U-Net weights missing or not a valid HDF5 file (Git LFS pointer?). Downloading from GitHub release...")
-        _download_file(CAD_WEIGHTS_URLS["lung_segmentation_unet.h5"], unet_path)
-        # If the space version was an invalid pointer, remove it so inference picks the valid file
-        if unet_space_path.is_file():
-            try:
-                with open(unet_space_path, "rb") as f:
-                    if f.read(8) != HDF5_SIGNATURE:
-                        unet_space_path.unlink()
-            except Exception:
-                pass
-
-    # 2. Check predictions.npy
-    pred_path = target_dir / "predictions.npy"
-    if not pred_path.is_file() or pred_path.stat().st_size < 1000:
-        log.warning("predictions.npy missing or invalid. Downloading from GitHub release...")
-        _download_file(CAD_WEIGHTS_URLS["predictions.npy"], pred_path)
 
 
 def _load() -> dict:
@@ -132,20 +70,33 @@ def _load() -> dict:
         raise RuntimeError(f"a feature library is missing ({e.name})") from e
     _quiet_logs()  # after the check above: a missing library is reported as such on /health
 
-    # Auto-download weights if missing or Git LFS pointer
+    # A missing U-Net (or a Git LFS pointer in its place) is downloaded and verified; nothing in the
+    # folder is replaced (service/weights.py). A failure here is not the verdict: the checks below
+    # say what is wrong with what is there. Printed: this logger shows warnings only.
+    weights = {}
     try:
-        _ensure_weights()
+        weights = ensure_weights(str(REPO / "ML" / "UNET Training"), log=log)
+        print(weights_summary(weights), flush=True)
     except Exception as e:
-        log.warning("Auto-downloading CAD weights failed: %s", e)
+        log.warning("Could not prepare the weights folder: %s", e)
 
     unet = inference.get_unet_model_path()
     if not unet.is_file():
-        raise RuntimeError("the U-Net weights are missing")
+        raise RuntimeError("the U-Net weights are missing and could not be downloaded (run `git lfs pull` in the checkout and restart the service)")
     with open(unet, "rb") as f:
         if f.read(8) != HDF5_SIGNATURE:
-            raise RuntimeError("the U-Net weights are not an HDF5 file (a Git LFS pointer? run `git lfs pull`)")
+            raise RuntimeError(
+                "the U-Net weights are not an HDF5 file (a Git LFS pointer?) and the real file could not be "
+                "provided (run `git lfs pull` in the checkout and restart the service)"
+            )
     if inference.load_segmentation_model() is None:
-        raise RuntimeError("the U-Net could not be loaded")
+        why = (
+            "it is not the file this service was validated with (a copy that was cut short?): move it "
+            "away and restart the service"
+            if "unexpected" in weights.values()
+            else "see the service log"
+        )
+        raise RuntimeError(f'the U-Net file "{unet.name}" could not be loaded: {why}')
     # Feature extraction must really work (an import succeeding is not enough): one synthetic
     # slice with a clear region, no fallback allowed.
     probe = np.zeros((128, 128), dtype=np.uint8)

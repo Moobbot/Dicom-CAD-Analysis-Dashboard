@@ -185,3 +185,8 @@ ehthumbs.db
 .idea/
 *.swp
 *.swo
+
+# Weights the model service downloads at start-up (service/weights.py) when the checkout only has
+# the Git LFS pointer. The tracked file is "lung_segmentation_unet .h5", with a space.
+/ML/UNET Training/lung_segmentation_unet.h5
+/ML/UNET Training/*.partial
